@@ -31,10 +31,14 @@ grid.readonlyColums = { [1] = true;[2] = true };
 	
 import config;
 import inet.url;
-var reloadSubscriptions = function(){
-	winform.chkAutoRefreshSubscription.checked = config.proxy.autoRefreshSubscription; 
-	config.proxy.subscribeUrls.fields =  {"";"checked";"ps";"url";} 
-	var cfgSubscribeUrls = config.proxy.subscribeUrls;
+var isOnCheckAll =0;
+	
+var reloadSubscriptions = function(){	
+	isOnCheckAll =1;
+	
+	winform.chkAutoRefreshSubscription.checked = config.subscribe.autoRefreshSubscription; 
+	config.subscribe.subscribeUrls.fields =  {"";"checked";"ps";"url";} 
+	var cfgSubscribeUrls = config.subscribe.subscribeUrls;
 	var chkAll = true;
 	var checked = {}
 	for(i=#cfgSubscribeUrls;1;-1){
@@ -50,6 +54,8 @@ var reloadSubscriptions = function(){
 	
 	grid.setTable( cfgSubscribeUrls );
 	winform.listview.checked = checked;	
+	
+	isOnCheckAll =0;
 } 
 
 winform.loadSubscriptionsOnce = function(){
@@ -70,8 +76,8 @@ subscribe("uiCommand.subscriptionNew",function(subItem,existIndex){
 
 //编辑变更值会触发下面的事件
 grid.onEditChanged = function(text,iItem,iSubItem){
-	var name = config.proxy.subscribeUrls.fields[iSubItem] 
-	var sub = config.proxy.subscribeUrls[iItem];
+	var name = config.subscribe.subscribeUrls.fields[iSubItem] 
+	var sub = config.subscribe.subscribeUrls[iItem];
 
 	if( name==="url" ){ 
 		if( text[1]=='/'#) {
@@ -90,7 +96,7 @@ grid.onEditChanged = function(text,iItem,iSubItem){
 
 	if(sub){
 		sub[name] = text;
-		config.proxy.save();
+		config.subscribe.save();
 	}
 	else {
 		winform.msgErr("错误的订阅索引")
@@ -101,10 +107,10 @@ winform.btnUpdate.skin(style.primaryButton);
 winform.btnUpdate.oncommand = function(id,event){
 
 	winform.btnUpdate.disabledText = {'\uF254';'\uF251';'\uF252';'\uF253';'\uF250'}
-	config.proxy.autoRefreshSubscription = winform.chkAutoRefreshSubscription.checked; 
+	config.subscribe.autoRefreshSubscription = winform.chkAutoRefreshSubscription.checked; 
 	
 	var outbondSubscribeUrlMap = {};
-	var cfgSubscribeUrls = config.proxy.subscribeUrls;
+	var cfgSubscribeUrls = config.subscribe.subscribeUrls;
 	if(#cfgSubscribeUrls == 0 ){
 		..mainForm.msgErr("尚未导入订阅节点",1500);
 		winform.btnUpdate.disabledText = null;
@@ -118,6 +124,7 @@ winform.btnUpdate.oncommand = function(id,event){
 		
 	import xray.outbounds;
 	if(!xray.outbounds.updateSubscription()){
+		//winform.btnUpdate.disabledText = null;
 		publish("uiCommand.restartxrayCore",outbounds) 
 	}
 	
@@ -125,17 +132,23 @@ winform.btnUpdate.oncommand = function(id,event){
 }
 
 winform.chkAll.oncommand = function(id,event){
+	isOnCheckAll = 1;
 	var checked = winform.chkAll.checked
+	var count =0
 	for hItem in winform.listview.each(){
+		//count +=1
 		winform.listview.setChecked(hItem,checked)
+		//win.msgbox(count,,,,100)
 	}
+	config.subscribe.save();
+	isOnCheckAll =0;
 }
 
 winform.btnRemove.skin(style.plainButton)
 winform.btnRemove.oncommand = function(id,event){
 	
 	var outboundRemoved = 0;
-	var subscribeUrls = config.proxy.subscribeUrls;
+	var subscribeUrls = config.subscribe.subscribeUrls;
 	var items = winform.listview.selected;
 	if(!#items){
 		return winform.msgWarn("未选中任何订阅项（ 请用鼠标单击订阅链接，不是指「勾选」 ）",2000)
@@ -159,16 +172,18 @@ winform.btnRemove.oncommand = function(id,event){
 	}
 	
 	config.proxy.save();
+	config.subscribe.save();
+	
 	
 	if(outboundRemoved){
+		//winform.btnUpdate.disabledText = null;
 		publish("uiCommand.restartxrayCore") 
 	}
 	else {
 		win.delay(200);
 	}
-	
-	publish("outbounds.updateConfigJson"); 
 	winform.btnUpdate.disabledText = null;
+
 }
 
 winform.btnAdd.oncommand = function(id,event){
@@ -192,7 +207,7 @@ winform.btnAdd.oncommand = function(id,event){
 		}
 	} 
 	
-	config.proxy.subscribeUrls[winform.listview.count+1] = {checked="启用";ps=ps;url=url}
+	config.subscribe.subscribeUrls[winform.listview.count+1] = {checked="启用";ps=ps;url=url}
 	var item = winform.listview.addItem({
 		"";"启用";ps;url
 	})
@@ -210,21 +225,21 @@ winform.listview.onnotify = function(id,code,ptr){
 		if( nmListView.uNewState & 0xF000/*_LVIS_STATEIMAGEMASK*/){
 			var selIndex = nmListView.iItem;
 			if( winform.listview.getChecked( selIndex ) ){
-				config.proxy.subscribeUrls[selIndex].checked = "启用";
-				config.proxy.save();
+				config.subscribe.subscribeUrls[selIndex].checked = "启用";
+				if (!isOnCheckAll ) config.subscribe.save();
 				
 				winform.listview.setItemText("启用",selIndex,2);
 			}
 			else {
-				config.proxy.subscribeUrls[selIndex].checked = "禁用";
-				config.proxy.save();
+				config.subscribe.subscribeUrls[selIndex].checked = "禁用";
+				if (!isOnCheckAll ) config.subscribe.save();
 				
 				winform.listview.setItemText("禁用",selIndex,2); 
 			} 
 			
 			var chkAll = true; 
-			for(i=#config.proxy.subscribeUrls;1;-1){
-				var sub = config.proxy.subscribeUrls[i] 
+			for(i=#config.subscribe.subscribeUrls;1;-1){
+				var sub = config.subscribe.subscribeUrls[i] 
 				if(sub.checked!="启用"){ 
 					chkAll = false;
 				}
@@ -278,9 +293,9 @@ winform.listview.onnotify = function(id,code,ptr){
 		if(#selectedItems==1){
 			popmenu.add('更新当前订阅',function(id){
 				var cfgSubscribeIndex = selectedItems[1]
-				var currentSubscribeUrl = config.proxy.subscribeUrls[cfgSubscribeIndex]['url'];
-				config.proxy.subscribeUrls[cfgSubscribeIndex].checked = "启用";
-				config.proxy.save();
+				var currentSubscribeUrl = config.subscribe.subscribeUrls[cfgSubscribeIndex]['url'];
+				config.subscribe.subscribeUrls[cfgSubscribeIndex].checked = "启用";
+				config.subscribe.save();
 				winform.listview.setChecked(currentIdx,true)
 				winform.listview.setItemText("启用",currentIdx,2);
 				xray.outbounds.updateSubscription({[currentSubscribeUrl]=true});

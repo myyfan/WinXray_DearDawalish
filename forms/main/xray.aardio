@@ -133,7 +133,7 @@ frmXray.autoUpdateSubscription = function(timeout){
 			return;
 		}
 		
-		if(config.proxy.autoRefreshSubscription){
+		if(config.subscribe.autoRefreshSubscription){
 			autoUpdateSubscriptionTimerId = ..win.setTimeout(function(){
 				autoUpdateSubscriptionTimerId = null;
 				
@@ -625,7 +625,7 @@ frmXray.listview.onnotify = function(id,code,ptr){
 			if(#selectedItems=1 && subscribeUrl){
 				
 				var ps;
-				var cfgSubscribeUrls = ..config.proxy.subscribeUrls;
+				var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
 				for(i=#cfgSubscribeUrls;1;-1){
 					var sub = cfgSubscribeUrls[i]  
 					if(sub.url===subscribeUrl) {

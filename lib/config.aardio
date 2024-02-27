@@ -1,4 +1,5 @@
-﻿//config 配置文件 
+﻿
+//config 配置文件 
 import fsys.config;
 config  = fsys.config("/config/"); 
 
@@ -24,9 +25,6 @@ if(config.settings.autoStartTest === null){
 	config.settings.autoStartTest = true;
 }
 
-if(config.proxy.autoRefreshSubscription === null){
-	config.proxy.autoRefreshSubscription = true;
-}
 
 if(!config.proxy.testInterval){
 	config.proxy.testInterval = 15;
@@ -36,8 +34,12 @@ if(!config.proxy.maxTestServers){
 	config.proxy.maxTestServers = 100;
 }
 
-if(!config.proxy.subscribeUrls){
-	config.proxy.subscribeUrls = {
+if(config.subscribe.autoRefreshSubscription === null){
+	config.subscribe.autoRefreshSubscription = false;
+}
+
+if(!config.subscribe.subscribeUrls){
+	config.subscribe.subscribeUrls = {
 		fields =  {"";"checked";"ps";"url";}
 	}
 }

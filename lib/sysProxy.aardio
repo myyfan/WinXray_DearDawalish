@@ -6,9 +6,9 @@ import xray.pacServer;
 
 namespace sysProxy;
 
-switch = function(mode){  
+switch = function(mode){
 	..config.proxy.mode = mode : "direct";
-	..config.proxy.save();
+	//..config.proxy.save();
   
 	if(mode=="pac"){
 		var pacUrl = ..xray.pacServer.getUrl();

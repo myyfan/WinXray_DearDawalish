@@ -288,7 +288,7 @@ importFromString = function(str,subscribeUrl){
 		var msgDlg = win.dlg.message(..mainForm); 
 		
 		var title = '正在获取订阅源 ... ';
-		var cfgSubscribeUrls = ..config.proxy.subscribeUrls;
+		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
 		for(i=#cfgSubscribeUrls;1;-1){
 			var sub = cfgSubscribeUrls[i]  
 			if( (sub.url === str) ){ 
@@ -333,7 +333,7 @@ importFromString = function(str,subscribeUrl){
 		}
 		
 		var existIndex;
-		var cfgSubscribeUrls = ..config.proxy.subscribeUrls : ..table.array();
+		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls : ..table.array();
 		for(i=#cfgSubscribeUrls;1;-1){
 			var sub = cfgSubscribeUrls[i]  
 			if(sub.url==subscribeUrl){ 
@@ -350,7 +350,7 @@ importFromString = function(str,subscribeUrl){
 		else{
 			..publish("uiCommand.subscriptionNew",cfgSubscribeUrls[existIndex],existIndex);
 		}
-		..config.proxy.subscribeUrls = cfgSubscribeUrls;
+		..config.subscribe.subscribeUrls = cfgSubscribeUrls;
 		..config.proxy.save();
 		
 		var jsonData;
@@ -375,10 +375,10 @@ importFromString = function(str,subscribeUrl){
     
 	var outbounds = ..table.array();
 	for(line in ..string.lines(str) ){
-		if(#outbounds>=1500){
+		if(#outbounds>=10000){
 			import win.dlg.message;
 			var msgDlg = win.dlg.message(..mainForm); 
-			var form = msgDlg.warn("导入的节点数目过多，已导入1500个节点并中止操作！")
+			var form = msgDlg.warn("导入的节点数目过多，已导入10000个节点并中止操作！")
 		
 			return outbounds;
 		}
@@ -1074,7 +1074,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			}
 		}
 		
-		var cfgSubscribeUrls = ..config.proxy.subscribeUrls;
+		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
 		for(i=#cfgSubscribeUrls;1;-1){
 			var sub = cfgSubscribeUrls[i]  
 			if(sub.checked ===  "启用") {
@@ -1117,7 +1117,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 
 autoUpdateSubscription = function(){
 	var outbondSubscribeUrlMap = {} 
-	var cfgSubscribeUrls = ..config.proxy.subscribeUrls;
+	var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
 	for(i=#cfgSubscribeUrls;1;-1){
 		var sub = cfgSubscribeUrls[i]  
 		if(!#sub.url){

@@ -72,7 +72,7 @@ tbs.onSelchange = function(idx,strip,form){
 		winform.subscription.loadSubscriptionsOnce();
 	}
 }
-tbs.selIndex = 1;
+tbs.selIndex = 2;
 
 import style;
 winform.btnUpdate.skin(style.primaryButton);
@@ -172,7 +172,7 @@ winform.btnUpdate.oncommand = function(id,event){
 		
 		config.core.default = cfg;
 		config.core.save();
-		
+		//winform.btnUpdate.disabledText = null;
 		publish("uiCommand.restartxrayCore",cfg);   
 		publish("config.core.changed");
 	} 
@@ -228,7 +228,7 @@ winform.editOutbounds.enablePopMenu(function(){
 							} 
 						}
 						
-						winform.msgOk("已成功导入" + #outbounds + "个服务器,请点击「更新设置」启用新配置。",1200);
+						winform.msgOk("已成功导入" + #outbounds + "个服务器,请点击「更新设置」启用新配置。",12000);
 						winform.editOutbounds.modified = true;
 						winform.editOutbounds.setFocus();
 						return; 

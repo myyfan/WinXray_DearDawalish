@@ -1,3 +1,21 @@
+/*
+import  debug
+import  debug.log
+var dbg = debug.hook();
+debug.log.setPath("/config/dbg$.log");
+..fsys.delete("/config/dbg$.log");
+debug.log.checkSize(0x20000);
+
+dbg.call=function(){
+debug.log.print( "call" )
+debug.log.print( debug.traceback(,"调用栈",2));
+}
+
+dbg.call=null
+*/
+
+
+
 /*启动参数检测{{*/
 if(_ARGV.github){	
 	loadcodex("\forms\main\tools\github.aardio");
@@ -171,6 +189,9 @@ navTools={cls="plus";text="工具";left=0;top=216;right=85;bottom=296;bkBottom=3
 titleBar={cls="bkplus";left=0;top=0;right=1022;bottom=38;bgcolor=8036607;dl=1;dr=1;dt=1;forecolor=16777215;linearGradient=180;z=2}
 )
 /*}}*/
+
+
+
 
 // 如果已经启动了程序，那么显示已启动的程序界面，为了不重复启动，退出本程序
 import win.ui.atom;

@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<project ver="10" name="WinXray" libEmbed="true" icon="\forms\ico\app.ico" ui="win" output="WinXray.exe" CompanyName="WinXray" FileDescription="网络代理通用客户端" LegalCopyright="Copyright (C) WinXray" ProductName="WinXray" InternalName="WinXray" FileVersion="4.6.9.26" ProductVersion="4.6.9.26" publishDir="\WinXray" dstrip="false" local="false" ignored="false">
+<project ver="10" name="WinXray" libEmbed="true" icon="\forms\ico\app.ico" ui="win" output="WinXray.exe" CompanyName="WinXray" FileDescription="网络代理通用客户端" LegalCopyright="Copyright (C) WinXray" ProductName="WinXray" InternalName="WinXray" FileVersion="4.6.9.27" ProductVersion="4.6.9.27" publishDir="\WinXray" dstrip="false" local="false" ignored="false">
 	<file name="main" path="main.aardio"/>
 	<folder name="窗体" path="forms" comment="" embed="true" local="false" ignored="false">
 		<folder name="ico" path="forms\ico" comment="forms\ico" local="false" embed="false" ignored="false">
@@ -13,13 +13,16 @@
 			<file name="xray.aardio" path="forms\main\xray.aardio" comment="forms\main\xray.aardio"/>
 			<folder name="config" path="forms\main\config" comment="forms\main\config" local="false" embed="false" ignored="false">
 				<file name="advancedConfig.aardio" path="forms\main\config\advancedConfig.aardio" comment="forms\main\config\advancedConfig.aardio"/>
+				<file name="Config.aardio" path="forms\main\config\Config.aardio" comment="forms\main\config\Config.aardio"/>
+				<file name="coreConfig.aardio" path="forms\main\config\coreConfig.aardio" comment="forms\main\config\coreConfig.aardio"/>
+				<file name="githubMirrorConfig.aardio" path="forms\main\config\githubMirrorConfig.aardio" comment="forms\main\config\githubMirrorConfig.aardio"/>
 				<file name="jsonConfig.aardio" path="forms\main\config\jsonConfig.aardio" comment="forms\main\config\jsonConfig.aardio"/>
-				<file name="subscription.aardio" path="forms\main\config\subscription.aardio" comment="forms\main\config\subscription.aardio"/>
-				<folder name="coreConfigs" path="forms\main\config\coreConfigs" comment="forms\main\config\coreConfigs" local="false" embed="false" ignored="false">
+				<file name="serversConfig.aardio" path="forms\main\config\serversConfig.aardio" comment="forms\main\config\serversConfig.aardio"/>
+				<file name="subscriptionConfig.aardio" path="forms\main\config\subscriptionConfig.aardio" comment="forms\main\config\subscriptionConfig.aardio"/>
+				<folder name="coreConfigs" path="forms\main\config\coreConfigs" comment="forms\main\config\coreConfigs">
 					<file name="default.json" path="forms\main\config\coreConfigs\default.json" comment="forms\main\config\coreConfigs\default.json"/>
 					<file name="xray.rules.json" path="forms\main\config\coreConfigs\xray.rules.json" comment="forms\main\config\coreConfigs\xray.rules.json"/>
 				</folder>
-				<file name="githubMirrorConfig.aardio" path="forms\main\config\githubMirrorConfig.aardio" comment="forms\main\config\githubMirrorConfig.aardio"/>
 			</folder>
 			<folder name="tools" path="forms\main\tools" comment="forms\main\tools" local="false" embed="false" ignored="false">
 				<file name="github.aardio" path="forms\main\tools\github.aardio" comment="forms\main\tools\github.aardio"/>

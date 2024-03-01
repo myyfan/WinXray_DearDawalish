@@ -494,7 +494,7 @@ var editOutboundTip = {
 	concurrency = {"Mux多路复用:最大并发连接数";"最小值1，最大值1024，特殊值-1，不加载mux模块。缺省由WinXray根据连接协议自动设定此值。"}; 
 	subscribeUrl = {"订阅地址";"节点绑定的订阅网址"};
 }
-
+//文本框消息响应
 winform.editOutbound.wndproc = function(hwnd,message,wParam,lParam){
 	if(message == 0x202/*_WM_LBUTTONUP*/){
 		var lineIndex = winform.editOutbound.lineFromChar();
@@ -514,6 +514,7 @@ winform.editOutbound.wndproc = function(hwnd,message,wParam,lParam){
 }
 	
 import win.ui.menu;
+//添加在新增服务器页面插入更多字段按钮弹出选项
 var insertFieldMenu = { 
 	{ "允许忽略证书:allowInsecure";
 		function(id){
@@ -602,10 +603,12 @@ var insertFieldMenu = {
 		} 
 	}; 
 } 
+//主界面listview右键新增服务器界面“插入更多字段”按键功能配置
 winform.editOutbound.enablePopMenu({
 	{ "插入配置字段";insertFieldMenu}
 })
 
+//插入更多配置字段 按钮响应函数
 import style;
 winform.btnInsertField.skin(style.transButton)
 winform.btnInsertField.oncommand = function(id,event){
@@ -616,6 +619,7 @@ winform.btnInsertField.oncommand = function(id,event){
 	popInsertFieldMenu.popup(x,y+cy);
 }
 
+//文本框输入过程中的动态检查功能
 import win.debounce;
 var onEditChange = win.debounce(
 	function(){
@@ -668,10 +672,12 @@ var onEditChange = win.debounce(
 	},500
 )	
 
+//文本框改变事件响应函数
 winform.editOutbound.onChange = function(){  
 	onEditChange();
 }
 
+//保存按钮响应函数
 winform.btnSaveOutbound.oncommand = function(id,event){
 	if(!#winform.editAddress.text){
 		return winform.editAddress.editBox.showErrorTip("配置错误","服务器地址不能为空")
@@ -696,6 +702,7 @@ winform.btnSaveOutbound.oncommand = function(id,event){
 	
 }
 
+//新增按钮响应函数
 import config;
 winform.btnAddOutbound.oncommand = function(id,event){
 	if(!#winform.editAddress.text){
@@ -720,6 +727,7 @@ winform.btnAddOutbound.oncommand = function(id,event){
 	publish("outbounds.updateConfigJson"); 
 }
 
+//生成guid按钮响应函数
 import win.guid;
 winform.btnGenGuid.oncommand = function(id,event){
     var sel = winform.cmbProtocol.selText;
@@ -740,6 +748,7 @@ winform.btnSaveOutbound.skin(style.button)
 winform.btnAddOutbound.skin(style.primaryButton)
 winform.btnSaveOutbound.disabled = true;
 
+//生成分享二维码
 import qrencode.bitmap;
 import xray.outbounds;
 winform.updateSharedLink = function(modified){ 
@@ -760,6 +769,7 @@ winform.updateSharedLink = function(modified){
 	}
 }
 
+//右下角导入按钮功能
 import win.clip;
 winform.btnImportSharedLink.skin(style.link);
 winform.btnImportSharedLink.oncommand = function(id,event){
@@ -782,6 +792,7 @@ winform.btnImportSharedLink.oncommand = function(id,event){
 	winform.msgFrown('未导入服务器！\r\n请先复制以下格式文本（自动清除其中的无效内容）：\r\n\r\n1、分享链接或服务器JSON配置。\r\n支持 vmess://，vless://，ss://，ssr://，trojan://， trojan-go:// 等通用分享链接。\r\n\r\n2、服务器配置的JSON数组,支持WinXray格式以及通用格式JSON。\r\n其他 BASE64 编码或明文返回以上1、2条规定的配置或分享链接。')
 }
  
+ //二维码分享界面复制按钮功能
 winform.btnCopySharedLink.skin(style.link)
 winform.btnCopySharedLink.oncommand = function(id,event){
 	var lnk = winform.editSharedLink.text;
@@ -794,9 +805,9 @@ winform.btnCopySharedLink.oncommand = function(id,event){
 	} 	
 }
 
-
+//自动配置服务器编辑页几个文本框
 winform.setOutboundConfig = function(cfg){
-    winform.cmbProtocol.selText = cfg.protocol;
+    winform.cmbProtocol.selText = cfg.protocol;//协议
 	winform.cmbProtocol.onListChange();
 	
 	winform.btnAddOutbound.skin(style.button);
@@ -805,9 +816,10 @@ winform.setOutboundConfig = function(cfg){
 
 	winform.origOutboundConfig = cfg;
 	winform.outboundConfig = table.clone(cfg);
-	winform.editOutbound.text = web.json.stringify(winform.outboundConfig,true,false);
+	winform.editOutbound.text = web.json.stringify(winform.outboundConfig,true,false);//服务器编辑框自动填入服务器数据
 	onEditChange();
 }
+
 winform.setOutboundConfig({
 	port = 443;
 	protocol = "vmess";
@@ -817,6 +829,7 @@ winform.btnAddOutbound.skin(style.primaryButton);
 winform.btnSaveOutbound.skin(style.button);
 winform.btnSaveOutbound.disabled = true;
 
+//下载更新内核组件功能
 winform.btnUpdateCore.skin(style.plainButton)
 winform.btnUpdateCore.oncommand = function(id,event){ 
 	winform.btnUpdateCore.disabledText = {'\uF254';'\uF251';'\uF252';'\uF253';'\uF250'};
@@ -895,6 +908,7 @@ winform.btnUpdateCore.oncommand = function(id,event){
 	}
 }
 
+//二维码被点击后响应功能
 winform.qrPicture.skin(
 	foreground = { 
 		hover = 0x10FFFF00; 

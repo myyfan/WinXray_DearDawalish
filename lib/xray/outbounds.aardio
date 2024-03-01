@@ -1087,6 +1087,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			
 		if(!..table.count(outbondSubscribeUrlMap)){ 
 			..mainForm.msgWarn('当前未启用任何订阅源,\n请先复制订阅源网址到剪贴板然后点击「批量导入链接」!', 1500);
+			winform.btnUpdate.disabledText = null;
 			return;
 		}
 	}

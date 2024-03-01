@@ -205,6 +205,7 @@ win.ui.simpleWindow( mainForm );
 import win.dlg.message;
 win.dlg.message.install();
 
+//配置高级选项卡
 import win.ui.tabs;
 var tbs = win.ui.tabs( 
 	mainForm.navStart,
@@ -228,7 +229,7 @@ tbs.skin({
 })
 
 tbs.loadForm(1,"\forms\main\xray.aardio" );
-tbs.loadForm(2,"\forms\main\config\Config.aardio" );
+tbs.loadForm(2,"\forms\main\config\ConfigPage.aardio" );
 tbs.loadForm(3,"\forms\main\tools\tools.aardio");
 
 tbs.selIndex = 1;
@@ -236,8 +237,9 @@ tbs.selIndex = 1;
 
 import xray.core;
 import win.ui.menu;
-mainForm.wndproc = {
-	// 托盘消息处理
+
+// 托盘消息处理
+mainForm.wndproc = {	
 	[0xACCF/*_WM_TRAYMESSAGE*/ ] = function(hwnd,message,wParam,lParam){
 		if( lParam = 0x205/*_WM_RBUTTONUP*/ ){
 			//弹出托盘菜单以前,一定要前置主窗口中,避免不点击菜单不会消失，父窗口隐藏也要这样做
@@ -393,6 +395,7 @@ if(!_ARGV.tray){
 	mainForm.show(); 
 }
 
+//配置托盘图标
 import win.image;
 var trayIcons = {
 	direct = win.image.loadIconFromFile("\forms\ico\app-direct.ico");
@@ -400,6 +403,7 @@ var trayIcons = {
 	proxy = _HAPPICON
 } 
 
+//消息订阅
 subscribe("sysProxy.modeChanged",function(active){
 	mainForm.tray.icon = trayIcons[config.proxy.mode] ;
 })

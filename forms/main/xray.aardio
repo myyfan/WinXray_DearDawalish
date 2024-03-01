@@ -15,6 +15,7 @@ radioProxyPac={cls="radiobutton";text="PAC代理";left=239;top=367;right=326;bot
 )
 /*}}*/
 
+//插入要显示的列
 frmXray.listview.insertColumn("类型",100) 
 frmXray.listview.insertColumn("服务器",160) 
 frmXray.listview.insertColumn("端口",70) 
@@ -26,13 +27,14 @@ frmXray.listview.insertColumn("状态",-1);
 // 减少闪烁，详见：https://learn.microsoft.com/zh-cn/windows/win32/controls/extended-list-view-styles
 frmXray.listview.setExtended(0x10000/*_LVS_EX_DOUBLEBUFFER*/);
 
-frmXray.show();
+frmXray.show();//显示窗口
 
+//检测服务器是否可代理
 import config;
 import xray.core; 
 var currentOutboundIndex,currentOutboundAddress;
 var activeOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTesting){
-	// 如果没有值，则退出
+	// 如果没有值，则取得值并返回（但currentOutboundIndex刚启动也没有值）
 	if(!outboundIndex && !outboundAddress){
 		outboundIndex,outboundAddress = currentOutboundIndex,currentOutboundAddress;
 		if(!outboundIndex && !outboundAddress) {
@@ -47,7 +49,7 @@ var activeOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTes
 	} 
  	
  	// 按 按钮之后，传进来的是空，所以会进入下面的判断
-	var startTesting = timerTesting;
+	var startTesting = timerTesting;//是否有检测定时器
 	if(!startTesting){
 		..publish("activeOutbound",false); 
 		
@@ -61,7 +63,7 @@ var activeOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTes
 		}
 	}
 
-	if( startTesting  ){
+	if( startTesting  ){//有检测定时器，则运行以下代码
 		currentOutboundIndex,currentOutboundAddress = outboundIndex,outboundAddress;
 		frmXray.autoTesting = true;
 		
@@ -143,6 +145,7 @@ frmXray.autoUpdateSubscription = function(timeout){
 		}
 } 
 
+//当有可代理服务器时
 frmXray.onStartXrayComplete = function(outboundIndex,timerTesting,outboundAddress){
 	// 停止自动更新
 	frmXray.autoUpdateSubscription(-1);
@@ -251,7 +254,7 @@ var tcping = function(frmXray,outboundIndex,outbound){
 		var client = wsock.tcp.client(); 	
 		var tickBegin = time.tick(); 
 		
-		if(client.connectTimeout(outbound.address,tonumber(outbound.port),3)){
+		if(client.connectTimeout(outbound.address,tonumber(outbound.port),3)){//连接成功的话（超时时间为3秒）
 			// 发送成功的话，返回“.”的长度（1）给ret
 			var ret = client.send("."); 
 			client.close();
@@ -269,7 +272,7 @@ var tcping = function(frmXray,outboundIndex,outbound){
 			client.close();
 			
 			failed++;
-			if(failed>1){ 
+			if(failed==8){ //原程序定义为只要有一次不成功就显示不可用，我改为一次都不成功才定义为“不可用”，避免出现服务器少时把免强可用的服务器给排除导致无服务器可用
 				frmXray.onTcpingReturn(outboundIndex,outbound.address,false,"不可用");
 				return;	
 			} 
@@ -322,18 +325,20 @@ frmXray.onTcpingFailed = function(){
 import sysProxy; 
 import style;
 frmXray.btnTcping.skin(style.primaryButton);
+
+//“检测并连接最快服务器”按钮函数定义
 frmXray.btnTcping.oncommand = function(id,event){
-	frmXray.listview.activeOutboundIndex = null;
-	frmXray.listview.activeOutboundAddress = null;
+	frmXray.listview.activeOutboundIndex = null;	//重置变量activeOutboundIndex
+	frmXray.listview.activeOutboundAddress = null;	//重置变量activeOutboundAddress
 	frmXray.listview.clearColumnImage();
 	
-	var items = frmXray.listview.items;
-	if(#items){
+	var items = frmXray.listview.items;//行元素
+	if(#items){//如果不为空
 		frmXray.btnTcping.disabledText = {'\uF254';'\uF251';'\uF252';'\uF253';'\uF250'}
 		
 		xray.core.lastDownloadingCoreFailed = false;
 		// 如果没有找到 xray core，那么就退出函数
-		if(!xray.core.getPath()){ 
+		if(!xray.core.getPath()){ //没有内核就返回
 			frmXray.btnTcping.disabledText = null; 
 			return;
 		} 
@@ -381,7 +386,7 @@ frmXray.btnTcping.oncommand = function(id,event){
 		}
 			
 		import thread.manage;
-		var manage = thread.manage(config.proxy.maxTestServers);
+		var manage = thread.manage(config.proxy.maxTestServers);//配置最大测速线程
 		var outbounds = config.proxy.outbounds;
 		var listview = frmXray.listview;
 		
@@ -1074,25 +1079,29 @@ var iml = win.imageList(16, 15);
 iml.add('GIF\56\57a \0\15\0\x80\0\0\x80\x80\x80\xff\0\xff\33\xf9\4\0\0\0\0\0\44\0\0\0\0 \0\15\0\0\2\31\x8c\x8f\xa9\xcb\xed\15\xa3\x9c\xb4N\xf0\x80\xde\56k\xbfA\\\xd7\x84 \x97Y\xea\xca\xb6\xee\11\xc7F\1\0;', 0xff00ff);
 frmXray.listview.setColumnImageList(iml);
 
+
+
 // 读取配置，添加到列表，并测速、连接
 subscribe("uiCommand.restartxrayCore",function(){ 
 	config.proxy.outbounds.fields = {"protocol";"address";"port";"security";"network";"ps";}
 	//frmXray.listview.fillParent();
 	var outbounds = config.proxy.outbounds;
-	for(i=#outbounds;1;-1){
+	for(i=#outbounds;1;-1){	//移除非法服务器项
 		if(type(outbounds[i])!="table"){
 			table.remove(outbounds,i);
 		}
 	}
 	frmXray.listview.setTable(outbounds); 
-	frmXray.listview.fillParent();
+	frmXray.listview.fillParent();//使指定列自适应父窗口宽度,如果不指定列默认调整最后一列,用户调整窗口大小时会自动调用此函数调整自适应列
 	// 程序首次执行时，lastDownloadingCoreFailed没有定义，所以下面一定会执行
-	if(!xray.core.lastDownloadingCoreFailed) frmXray.btnTcping.oncommand();
+	if(!xray.core.lastDownloadingCoreFailed) frmXray.btnTcping.oncommand();//转“检测并连接最快服务器”按钮函数执行
 } )
 
 import process;
+
 // 程序真正入口
-// 如果有代理节点
+
+// 如果有代理节点，延迟1秒发布"uiCommand.restartxrayCore"
 if(#config.proxy.outbounds){
 	frmXray.setTimeout( 
 		function(){
@@ -1101,6 +1110,8 @@ if(#config.proxy.outbounds){
 	);	
 }
 
+
+// 订阅代理切换消息，设置3个单选控件
 subscribe("sysProxy.modeChanged",function(mode){
 	frmXray.radioProxyPac.checked = false;
 	frmXray.radioProxy.checked = false;
@@ -1118,9 +1129,11 @@ subscribe("sysProxy.modeChanged",function(mode){
 		frmXray.radioProxyDirect.checked = true;
 	}
 } )
-// 设置代理
+
+//发布代理模式切换消息
 publish("sysProxy.modeChanged",config.proxy.mode);
 
+//代理模式切换处理函数
 import sysProxy;
 var switchProxyMode = function(){
 	if(frmXray.radioProxyPac.checked){
@@ -1133,10 +1146,12 @@ var switchProxyMode = function(){
 		sysProxy.switchToDirectMode();	
 	}  
 }
+//3个单选响应函数
 frmXray.radioProxyPac.oncommand = switchProxyMode;
 frmXray.radioProxy.oncommand = switchProxyMode;
 frmXray.radioProxyDirect.oncommand = switchProxyMode;
 
+//编辑PacOrUwp按钮
 import win.dlg.message; 
 frmXray.btnEditPacOrUwp.skin(style.plainButton)
 frmXray.btnEditPacOrUwp.oncommand = function(id,event){
@@ -1165,17 +1180,19 @@ subscribe("uiCommand.showPacForm",function(...){
 	frmXray.btnEditPacOrUwp.oncommand();
 } )
 
+//消息窗口输出函数
 subscribe("uiCommand.print",function(...){
 	frmXray.edit.print(...);
 } )
 
 import xray.outbounds;
+//定义“批量导入服务器”按钮功能
 frmXray.btnImportServerFromClipBd.skin(style.plainButton)
 frmXray.btnImportServerFromClipBd.oncommand = function(id,event){
 	var str = ..win.clip.read();
 	if(str){  
 		str = ..string.trim(str,'"\'\t\r\n '); 
-		if( ..string.startWith(str,"http://") 
+		if( ..string.startWith(str,"http://") 		//如果是链接，调用更新订阅程序，然后返回
 			|| ..string.startWith(str,"https://") 
 			|| ..string.match(str,"^\s*/\N+\s*$") ){
 			if(..string.match(str,"^\s*/\N+\s*$")){
@@ -1186,7 +1203,7 @@ frmXray.btnImportServerFromClipBd.oncommand = function(id,event){
 			return;
 		}
 
-		var outbounds = xray.outbounds.importFromString(str);
+		var outbounds = xray.outbounds.importFromString(str);		//不是链接则解析剪切板服务器数据
 		if(#outbounds){
 			..table.append(config.proxy.outbounds,outbounds);
 			// 防止首次粘贴时，下载core失败导致没有保存节点的情况，所以手动save一下
@@ -1201,34 +1218,36 @@ frmXray.btnImportServerFromClipBd.oncommand = function(id,event){
 	frmXray.msgFrown('未导入服务器！\r\n请先复制以下格式文本（自动清除其中的无效内容）：\r\n\r\n1、一行或多行（忽略无效行）分享链接或服务器JSON配置。\r\n支持 vmess://，vless://，ss://，ssr://，trojan://， trojan-go:// 等通用分享链接。\r\n\r\n2、包含多个服务器配置的JSON数组,支持WinXray格式以及通用格式JSON。\r\n\r\n3、单个 http:// 或 https:// 开头的通用订阅源地址。\r\n可直接使用浏览器地址栏的github文件地址（含blob或raw目录名）。\r\n也可以仅复制单斜杆开始的github文件路径。\r\n\r\n订阅源可用BASE64编码或明文返回以上1、2条规定的配置或分享链接。')
 }
 
+//“异常自动重接”响应函数
 var testTimerId;
 frmXray.chkAutoTest.oncommand = function(id,event){
 	if(testTimerId){
-		frmXray.clearInterval(testTimerId);
+		frmXray.clearInterval(testTimerId);	//删除定时器
 	}
 
-	config.proxy.test = frmXray.chkAutoTest.checked;
-	if(!config.proxy.test) return;
+	config.proxy.test = frmXray.chkAutoTest.checked;//读取“异常自动重接”勾选状态
+	if(!config.proxy.test) return;//“异常自动重接”未选就退出
 
 	import inet.http;
+	//设置异常检查定时器
 	testTimerId = frmXray.setInterval( 
 		config.proxy.testInterval*1000,function(){
-			if(frmXray.btnTcping.disabled) return;
-			if( frmXray.autoTesting ) return; 
+			if(frmXray.btnTcping.disabled) return;//正在测速就返回
+			if( frmXray.autoTesting ) return; //“异常自动重接”未选就退出
 
 			var idx = frmXray.listview.activeOutboundIndex;
 			var address = frmXray.listview.activeOutboundAddress;
-			if( !( idx&&address) ){ 
+			if( !( idx&&address) ){ //如果没有活动服务器就运行
 				if(!inet.http.isAlive(,false)){
 					return config.proxy.testInterval*1000;
 				}
 				
-				if(!xray.core.lastDownloadingCoreFailed) frmXray.btnTcping.oncommand();
+				if(!xray.core.lastDownloadingCoreFailed) frmXray.btnTcping.oncommand();//有内核就转运行自动测试函数
 				return; 
 			}
 			
 			frmXray.autoTesting = true; 
-			activeOutbound(idx,address,true,true);
+			activeOutbound(idx,address,true,true);//有活动服务器就定时检测代理状态
 			
 			return config.proxy.testInterval*1000;
 		} 
@@ -1237,11 +1256,12 @@ frmXray.chkAutoTest.oncommand = function(id,event){
 
 if(config.proxy.test){
 	frmXray.chkAutoTest.checked = true;
-	frmXray.chkAutoTest.oncommand();
+	frmXray.chkAutoTest.oncommand();//设置计时器
 }
 
 frmXray.chkAutoTest.skin(style.checkBox);
 
+//日志窗口启用右键弹出菜单
 frmXray.edit.enablePopMenu({
 	{ /*---分隔线---*/ };
 	{ "清屏";

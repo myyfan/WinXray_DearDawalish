@@ -12,8 +12,8 @@ httpProxPort = null;
 
 // 获取系统代理配置
 getSystemProxyConfig = function(){
-    if(!(socksProxyPort&&httpProxPort)){ return null; }
-	return ..config.proxy.useHttpGlobal ? ("127.0.0.1:" + httpProxPort ): ("SOCKS=127.0.0.1:"+socksProxyPort)  
+    if(!(socksProxyPort&&httpProxPort)){ return null; }//有设置代理就什么也不做，没有就返回null
+	return ..config.proxy.useHttpGlobal ? ("127.0.0.1:" + httpProxPort ): ("SOCKS=127.0.0.1:"+socksProxyPort)  //返回代理配置信息
 } 
 
 // 判断入站端口是否被修改

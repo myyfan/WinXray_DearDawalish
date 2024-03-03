@@ -273,7 +273,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,enableRetry,outboundAddress){
 					next=frmXray.validOutbounds[i]
 					
 					}
-}
+			}
 			//debug.log.print(next);
 			var test = frmXray.listview.getItemText(next[1],2)
 			if (test == next[2]) {
@@ -281,12 +281,13 @@ frmXray.onStartXrayFailed = function(outboundIndex,enableRetry,outboundAddress){
 				}
 			else {
 			debug.log.printf("地址不同,刷新重试!"+test);//不同说明表已经被别的线程改变,需重新测试
-			frmXray.btnTcping.oncommand()
+			frm.edit.print("列表有变动,正在刷新!");
+			publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 			return;			
 			}
 			
 			debug.log.printf('索引号:'+next[1]+"地址:"+next[2]+"测试延时:"+next[3]+"秒，"+"表大小为："+#frmXray.validOutbounds+"服务器总数为:"+#..config.proxy.outbounds);
-			frmXray.edit.printf('\n\n索引号:'+next[1]+"，地址:"+next[2]+"，测试延时:"+next[3]+"秒，"+"表大小为："+#frmXray.validOutbounds+"，服务器总数为:"+#..config.proxy.outbounds+'\n\n');
+			frmXray.edit.printf('正在测试服务器列表号:'+next[1]+"，服务器地址:"+next[2]+"，测试延时:"+next[3]+"秒，"+"剩余可测数量为："+#frmXray.validOutbounds+"，服务器总数为:"+#..config.proxy.outbounds+'\n\n');
 			..table.removeByValue(frmXray.validOutbounds,next);
 			activeOutbound(next[1],next[2],#frmXray.validOutbounds);
 			if(!isManualSwitch) {
@@ -1047,7 +1048,7 @@ frmXray.listview.sortBySpeed = function () {
 //移除重复节点(保留序号在前的)
 frmXray.removeRepeat=function(){
 	//跳过检测异常
-	frmXray.listChanging = true;
+	frmXray.listChanging = true;//列表被改变标志
 	//避免后台线程改变activeIndex
 	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; 
 	frmXray.btnTcping.disabledText = null;
@@ -1092,8 +1093,10 @@ frmXray.removeRepeat=function(){
 	config.proxy.outbounds = outbounds;
 	config.proxy.save();
 	frmXray.listview.setTable(outbounds);//刷新视图
-	//重新测速
-	frmXray.btnTcping.oncommand();
+	
+//重新测速
+	//publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
+
 	//继续检测异常
 	frmXray.listChanging = false;
 	

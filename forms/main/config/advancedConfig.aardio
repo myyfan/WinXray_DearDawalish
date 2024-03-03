@@ -293,7 +293,7 @@ winform.lbMaxTestServers.text = config.proxy.maxTestServers+"个服务器";
 winform.tbMaxTestServers.onPosChanged = function( pos,thumbTrack ){
 	if(pos>200){
 		winform.lbMaxTestServers.color = 0xFF;
-		winform.lbMaxTestServers.text = pos+"个服务器( 数值太大可能导致卡顿 )";
+		winform.lbMaxTestServers.text = pos+"个服务器( 数值太大可能导致卡顿且内存占用过大导致崩溃 )";
 	}
 	else {
 		winform.lbMaxTestServers.color = 0;

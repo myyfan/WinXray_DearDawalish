@@ -1,11 +1,13 @@
-/*
+
 import  debug
 import  debug.log
 var dbg = debug.hook();
-debug.log.setPath("/config/dbg$.log");
-..fsys.delete("/config/dbg$.log");
+//debug.log.setPath("/config/dbg$.log");
+//..fsys.delete("/config/dbg$.log");
 debug.log.checkSize(0x20000);
 
+
+/*
 dbg.call=function(){
 debug.log.print( "call" )
 debug.log.print( debug.traceback(,"调用栈",2));

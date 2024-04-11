@@ -286,7 +286,7 @@ winform.tbTestInterval.onPosChanged = function( pos,thumbTrack ){
 	config.proxy.save();
 }
 
-winform.tbMaxTestServers.setTrackbarRange(1,300);
+winform.tbMaxTestServers.setTrackbarRange(10,300);
 winform.tbMaxTestServers.skin(style.trackbar);
 winform.tbMaxTestServers.progressPos = config.proxy.maxTestServers;
 winform.lbMaxTestServers.text = config.proxy.maxTestServers+"个服务器";

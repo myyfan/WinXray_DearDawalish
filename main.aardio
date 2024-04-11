@@ -9,13 +9,13 @@ debug.log.checkSize(0x20000);
 
 /*
 dbg.call=function(){
-debug.log.print( "call" )
+
 debug.log.print( debug.traceback(,"调用栈",2));
 }
 
 dbg.call=null
 */
-
+debug.log.print( "debug" )
 
 
 /*启动参数检测{{*/

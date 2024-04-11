@@ -30,6 +30,17 @@
                 "enabled": true
             },
             "tag": "http_proxy"
+        },
+        {
+            "listen":"127.0.0.1",
+            "port":1084,
+            "protocol":"dokodemo-door",
+            "tag":"api",
+            "settings":{
+                "address":"127.0.0.1",
+                "allowTransparent":false,
+                "udp":false
+            }
         }
     ],
     "log": {
@@ -56,6 +67,33 @@
             "tag": "block"
         }
     ],
+    "api":{
+        "services":[
+            "HandlerService",
+            "LoggerService",
+            "StatsService"
+        ],
+        "tag":"api"
+    },
+    "log":{
+        "access":"",
+        "error":"",
+        "loglevel":"warning"
+    },
+    "policy":{
+        "levels":{
+            "0":{
+                "statsUserDownlink":false,
+                "statsUserUplink":false
+            }
+        },
+        "system":{
+            "statsInboundDownlink":false,
+            "statsInboundUplink":false,
+            "statsOutboundDownlink":true,
+            "statsOutboundUplink":true
+        }
+    },
     "routing": {
         "domainStrategy": "IPIfNonMatch",
         "rules": [
@@ -67,5 +105,8 @@
                 "type": "field"
             }
         ]
+    },
+    "stats":{
+
     }
 }

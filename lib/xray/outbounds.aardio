@@ -882,6 +882,7 @@ validAll = function(outbounds){
 }
 	
 validOutbound = function(outbound){  
+try{	
 	if(type(outbound)!="table"){ return;  }
 	
 	outbound.obfsParam = outbound.obfs_param;
@@ -1004,15 +1005,24 @@ validOutbound = function(outbound){
 		outbound.servername = null;
 	}
 	
+/*
+	import debug.log
+	import console
+	debug.log.print(outbound);
+	console.dump(outbound)
+*/
+	
 	var httpOpts = outbound["http-opts"];  
+	
 	if(httpOpts){
 		if(!..table.count(httpOpts)){
 			httpOpts = outbound["h2-opts"] : httpOpts; 
 		}
 			
+		
 		if(httpOpts.method){
 			outbound.httpMethod = httpOpts.method;
-		}
+		}		
 		
 		if(httpOpts.path){
 			outbound.path = httpOpts.path;
@@ -1061,10 +1071,18 @@ validOutbound = function(outbound){
 		return outbound;
 	}
 }
+catch () {
+	import debug.log
+	import console
+	debug.log.print(outbound);
+	//console.dump(outbound)
+		return false;
+		} 
+}
 
 updateSubscription = function(outbondSubscribeUrlMap){
 	var cfgOutbounds = ..config.proxy.outbounds : ..table.array(); 
-	if(!outbondSubscribeUrlMap) {
+	if(!outbondSubscribeUrlMap) {//传过来的为空，就从服务器中读取订阅信息
 		outbondSubscribeUrlMap = {}
 		
 		for(i=#cfgOutbounds;1;-1){
@@ -1098,18 +1116,20 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		if(#impOutbounds){
 			for(i=#cfgOutbounds;1;-1){
 				var outbound = cfgOutbounds[i] 
-				if(outbound.subscribeUrl==url){
+				if(outbound.subscribeUrl==url && outbound.ps != "已测通"){
 					..table.remove(	cfgOutbounds,i );
 				}
 			}
-				
+			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
 			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;
 		}
 	}
-	
+	//import xray
+	//..frmXray.removeRepeat();
 	..config.proxy.save();
 	..mainForm.msgOk("已刷新" + count + "个订阅服务器。",1500);
+	..publish("uiCommand.print","已找到" + count + "个订阅服务器。"); 
 	..publish("outbounds.updateConfigJson");
 	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
 	
@@ -1186,7 +1206,7 @@ var currentActiveOutbound = ..globalActiveOutbound;
 		if(#impOutbounds){
 			for(i=#cfgOutbounds;1;-1){
 				var outbound = cfgOutbounds[i] 
-				if(outbound.subscribeUrl==url){
+				if(outbound.subscribeUrl==url && outbound.ps != "已测通"){
 					..table.remove(	cfgOutbounds,i );
 				}
 			}

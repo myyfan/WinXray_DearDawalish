@@ -14,6 +14,8 @@ static={cls="static";text="双击上面单元格可直接编辑";left=678;top=48
 /*}}*/
 
 import style;
+import  xray.outbounds;
+
 winform.chkAutoRefreshSubscription.skin(style.checkBox);  
 winform.chkAll.skin(style.checkBox); 
 winform.btnAdd.skin(style.plainButton);
@@ -123,9 +125,10 @@ winform.btnUpdate.oncommand = function(id,event){
 		outbondSubscribeUrlMap[sub.url] = sub.checked=="启用";
 	} 
 		
-	import xray.outbounds;
+	
 	if(!xray.outbounds.updateSubscription()){
 		//winform.btnUpdate.disabledText = null;
+		
 		publish("uiCommand.restartxrayCore",outbounds) 
 	}
 	
@@ -165,7 +168,7 @@ winform.btnRemove.oncommand = function(id,event){
 		var outbounds = ..config.proxy.outbounds : ..table.array();
 		for(i=#outbounds;1;-1){
 			var outbound = outbounds[i]  
-			if(outbound.subscribeUrl===url){ 
+			if(outbound.subscribeUrl===url && outbound.ps != "已测通"){ //修改为可用的不删除
 				table.remove(outbounds,i);
 				outboundRemoved++;
 			}
@@ -188,33 +191,53 @@ winform.btnRemove.oncommand = function(id,event){
 }
 
 winform.btnAdd.oncommand = function(id,event){
+	import debug.log
+	import console
+	//debug.log.print(url);
+	
 	import inet.url;
 	import win.clip;
 	
 	var ps = "订阅源";
 	var url = win.clip.read();
+	//console.dump(url);
+
 	url = url ? string.trim(url,'"\'\s\t\r\n ');
-	if(url && url[1]=='/'#){
-		url = "http://github.com" + url;
+	//console.dump(url);
+	url=string.split(url,'<\r\n>',);
+	//console.dump(url);
+	if(url ){
+		for(i=1;#url;1){
+			console.dump(url[i]);
+			if(url[i]=='/'#){
+				url[i] = "http://github.com" + url[i];
+			}
+			
+			
+			if(!inet.url.is(url[i])){
+				url[i] = "";
+			}
+			else {
+				var tUrl = inet.url.split(url[i]);
+				if(tUrl && tUrl.host){
+					ps = tUrl.host
+				}
+			} 
+			
+			config.subscribe.subscribeUrls[winform.listview.count+1] = {checked="启用";ps=ps;url=url[i]}
+			var item = winform.listview.addItem({
+				"";"启用";ps;url[i]
+			})
+			
+			winform.listview.setChecked(item,true);
+			grid.beginEdit(item,4);	
+		
+		}	
 	}
 	
-	if(!inet.url.is(url)){
-		url = "";
-	}
-	else {
-		var tUrl = inet.url.split(url);
-		if(tUrl && tUrl.host){
-			ps = tUrl.host
-		}
-	} 
 	
-	config.subscribe.subscribeUrls[winform.listview.count+1] = {checked="启用";ps=ps;url=url}
-	var item = winform.listview.addItem({
-		"";"启用";ps;url
-	})
 	
-	winform.listview.setChecked(item,true);
-	grid.beginEdit(item,4);
+	
 }
 
 winform.listview.onnotify = function(id,code,ptr){  

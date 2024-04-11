@@ -1,0 +1,142 @@
+﻿import debug
+import debug.log
+//import debug.hook()
+import console
+
+//流量统计
+import xray.core;
+
+namespace TrafficStats;
+coreType = "xray";
+corePath = ..io.fullpath("/core/xray/xray.exe");
+apiPort = 1084;
+reset = function(){
+	import debug
+	import debug.log
+	//debug.log.print("reset函数启动")
+	if( prcsCmd ){ prcsCmd.terminate();prcsCmd = null; }
+	port = '--server=127.0.0.1:'+apiPort;
+	//coreType = ..Core.XrayCore.coreType;
+	
+	getPath = function(){
+		import debug
+	import debug.log
+	debug.log.print("reset函数0")
+	var path = ..io.fullpath("/core/xray/xray.exe");
+	if(..io.exist(path)){
+		return path;
+	}
+	debug.log.print("reset函数1")
+	coreType = "xray";
+	corePath = getPath();
+	corePath = ..io.fullpath("/core/xray/xray.exe");
+	debug.log.print("corePath"+corePath);
+	}
+}
+//reset();
+
+start = function(){
+	import debug
+	import debug.log
+	//debug.log.print("流量监控启动")
+    reset();
+    corePath = ..io.fullpath("/core/xray/xray.exe");
+    //debug.log.print("corePath路径:"+corePath);
+    if(!corePath || !coreType){ return }
+    //debug.log.print("流量监控1")
+	if(coreType=="xray"){
+		//debug.log.print("流量监控2")
+		var downTraffic = ..win.invoke(
+			function(corePath,port){
+				import debug
+				import debug.log
+				import console
+				//debug.log.print("流量监控3")
+				
+				import process.popen;
+				import web.json;
+				var cmdText = '"outbound>>>proxy>>>traffic>>>downlink"';
+				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:1084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:1084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
+				var json = ..web.json.tryParse(prcsCmd.read(-1));
+				import debug.log
+				import console
+				
+			
+			//console.dumpTable(json.stat)
+		a=json.stat[1]
+			//console.dumpTable(a)
+		/*
+	b=a.name
+*/
+			c=a.value
+/*
+			console.log(type(a),type(b),type(c))
+			console.log(b,c)
+*/
+
+				//console.log(json.stat.value)
+				var value = (json.stat[1] && json.stat[1].value) ? json.stat.value : false;
+				var value = c;
+		//debug.log.print("流量监控4")
+				return value;
+			},corePath,port
+		)
+		var upTraffic = ..win.invoke(
+			function(corePath,port){
+				import process.popen;
+				import web.json;
+				var cmdText = '"outbound>>>proxy>>>traffic>>>uplink"';
+				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:1084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:1084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
+				var json = ..web.json.tryParse(prcsCmd.read(-1));
+				
+				import console
+				import debug
+				//console.dumpTable(json.stat)
+				a=json.stat[1]
+			//console.dumpTable(a)
+			//b=a.name
+			c=a.value
+			//console.log(type(a),type(b),type(c))
+			//console.log(b,c)
+			
+				//var value = (json.stat[1] && json.stat[1].value) ? json.stat[1].value : false;
+				var value = c
+				return value;
+			},corePath
+		)
+		return downTraffic,upTraffic; 
+	}
+	elseif(coreType=="v2ray"){
+		corePath = ..io.joinpath(..io.splitpath(corePath).dir,"v2ctl.exe");
+		var downTraffic = ..win.invoke(
+			function(corePath,port){
+				import process.popen;
+				import web.json;
+				var cmdText = '"outbound>>>proxy-out>>>traffic>>>downlink"';
+				prcsCmd = ..process.popen(corePath,corePath,"api",port,"StatsService.GetStats",'"name:'+cmdText+'reset:true"');
+				var json = string.replace(string.replace(prcsCmd.read(-1),"\<",'\{'),"\>\s*$",'\}');
+				var table = ..web.json.tryParse(json);
+				var value = (json && json.stat.value) ? json.stat.value : false;
+				return value; 
+			}
+		)
+		var upTraffic = ..win.invoke(
+			function(corePath,port){
+				import process.popen;
+				import web.json;
+				var cmdText = '"outbound>>>proxy-out>>>traffic>>>uplink"';
+				prcsCmd = ..process.popen(corePath,corePath,"api",port,"StatsService.GetStats",'"name:'+cmdText+'reset:true"');
+				var json = string.replace(string.replace(prcsCmd.read(-1),"\<",'\{'),"\>$",'\}');
+				var table = ..web.json.tryParse(json);
+				var value = (json && json.stat) ? json.stat.value : false;
+				return value; 
+			} 
+		)
+		return downTraffic,upTraffic;
+	}
+}
+
+/**intellisense(TrafficStats)
+reset = 重置
+start = 开始流量统计
+end intellisense**/

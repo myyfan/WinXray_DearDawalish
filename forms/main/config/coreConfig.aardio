@@ -22,81 +22,80 @@ import style;
 subscribe("uiCommand.updateCore", function(){
 	
 	
-		var cfg,err = web.json.tryParse(winform.editCoreConfig.text);
-		if(type(cfg)!==type.table){
-			winform.editCoreConfig.showErrorTip(,string.concat("JSON语法错误 ",err));
-			winform.btnUpdate.disabledText = null;
-			return;
-		}
-		
-		var proxyOutboundInCore;
-		for(k,ob in cfg.outbounds){
-			if(ob.tag == "proxy"){
-				proxyOutboundInCore = ob;
-			} 
-		}
-		
-		if( type(proxyOutboundInCore) !="table"  ){
-			winform.msgErr(`outbounds 数组中未找到默认出站节点 {tag:"proxy"}`);
-			winform.btnUpdate.disabledText = null;
-			return; 
-		}
-		
-		var socksInbounds,httpInbounds;
-		for(k,ib in cfg.inbounds){
-			if(ib.tag == "proxy"){
-				socksInbounds = ib;
-			} 
-			elseif(ib.tag == "http_proxy"){
-				httpInbounds = ib;
-			} 
-		}
-			
-		if( type(socksInbounds) !="table"  ){
-			winform.msgErr(`inbounds 数组中未找到SOCKS协议入站节点 {tag:"proxy"}`);
-			winform.btnUpdate.disabledText = null;
-			return; 
-		}
-		
-		if( type(httpInbounds) !="table"  ){
-			winform.msgErr(`inbounds 数组中未找到HTTP协议入站节点 {tag:"http_proxy"}`);
-			winform.btnUpdate.disabledText = null;
-			return; 
-		}
+	var cfg,err = web.json.tryParse(winform.editCoreConfig.text);
+	if(type(cfg)!==type.table){
+		winform.editCoreConfig.showErrorTip(,string.concat("JSON语法错误 ",err));
+		winform.btnUpdate.disabledText = null;
+		return;
+	}
 	
-		if(type(socksInbounds[["listen"]])!="string"){
-			winform.msgErr(`出站节点 {tag:"proxy"} listen字段必须指定IP或0.0.0.0`);
-			winform.btnUpdate.disabledText = null;
-			return; 
-		}
-
-		if(type(socksInbounds[["port"]])!="number"){
-			winform.msgErr(`出站节点 {tag:"proxy"} port字段必须用数值指定监听端口`);
-			winform.btnUpdate.disabledText = null;
-			return; 
+	var proxyOutboundInCore;
+	for(k,ob in cfg.outbounds){
+		if(ob.tag == "proxy"){
+			proxyOutboundInCore = ob;
 		} 
-
-		if(type(httpInbounds[["listen"]])!="string"){
-			winform.msgErr(`出站节点 {tag:"http_proxy"} listen字段必须指定IP或0.0.0.0`);
-			winform.btnUpdate.disabledText = null;
-			return; 
-		}
-
-		if(type(httpInbounds[["port"]])!="number"){ 
-			winform.msgErr(`出站节点 {tag:"http_proxy"} port字段必须用数值指定监听端口`);
-			winform.btnUpdate.disabledText = null;
-			return; 
-		} 
-		
-		config.core.default = cfg;
-		config.core.save();
-		//winform.btnUpdate.disabledText = null;
-		publish("uiCommand.restartxrayCore",cfg);   
-		publish("config.core.changed");
+	}
 	
+	if( type(proxyOutboundInCore) !="table"  ){
+		winform.msgErr(`outbounds 数组中未找到默认出站节点 {tag:"proxy"}`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	}
+	
+	var socksInbounds,httpInbounds;
+	for(k,ib in cfg.inbounds){
+		if(ib.tag == "proxy"){
+			socksInbounds = ib;
+		} 
+		elseif(ib.tag == "http_proxy"){
+			httpInbounds = ib;
+		} 
+	}
+		
+	if( type(socksInbounds) !="table"  ){
+		winform.msgErr(`inbounds 数组中未找到SOCKS协议入站节点 {tag:"proxy"}`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	}
+	
+	if( type(httpInbounds) !="table"  ){
+		winform.msgErr(`inbounds 数组中未找到HTTP协议入站节点 {tag:"http_proxy"}`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	}
+
+	if(type(socksInbounds[["listen"]])!="string"){
+		winform.msgErr(`出站节点 {tag:"proxy"} listen字段必须指定IP或0.0.0.0`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	}
+
+	if(type(socksInbounds[["port"]])!="number"){
+		winform.msgErr(`出站节点 {tag:"proxy"} port字段必须用数值指定监听端口`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	} 
+
+	if(type(httpInbounds[["listen"]])!="string"){
+		winform.msgErr(`出站节点 {tag:"http_proxy"} listen字段必须指定IP或0.0.0.0`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	}
+
+	if(type(httpInbounds[["port"]])!="number"){ 
+		winform.msgErr(`出站节点 {tag:"http_proxy"} port字段必须用数值指定监听端口`);
+		winform.btnUpdate.disabledText = null;
+		return; 
+	} 
+	
+	config.core.default = cfg;
+	config.core.save();
+	//btnUpdate.disabledText = null;
+	publish("uiCommand.restartxrayCore",cfg);   
+	publish("config.core.changed");	
 
 	win.delay(500);
-	winform.btnUpdate.disabledText = null;
+	//winform.btnUpdate.disabledText = null;
 	winform.msgOk("配置已更新",1200);
 })
 

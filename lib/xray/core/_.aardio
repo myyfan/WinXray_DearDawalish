@@ -174,11 +174,13 @@ restart = function(editor,outbound){
 		
 		inbounds[1].port = socksProxyPort;
 		inbounds[2].port = httpProxPort;
+		apiPort = inbounds[3].port;
 		..config.core.save();
 	}
 	
 	..publish("uiCommand.print","已启动代理服务器，SOCKS端口:" + socksProxyPort + " HTTP端口:" + httpProxPort) 
 	..publish("xrayCore.restarted",socksProxyPort,httpProxPort); 
+	
 	xrayStarting = false;
 	return true;
 }

@@ -198,7 +198,78 @@ restart = function(editor,outbound){
 	//console.dump(prcsxray);
 	return true;
 }
+//新的添加出口服务器函数，修改自startSearcher函数
+addOutbound = function(frmXray,editor,outbound,proxyTag,outConfigJsonName){
+	import debug
+	import debug.log
+	import console
+	//debug.debug();
+	//console.dump(prcsxray);
+	
+	var corePath = getPath(editor.hwnd);
+	if(!corePath){ 
+		xrayStarting = false;
+		return false,"启动失败,未找到 xray.exe"; 
+	}  
 
+	// 启动程序时点击按钮，prcsxray为空，进入分支
+	//console.dump(prcsxray);
+	
+	if(prcsxray){ 
+		
+		import xray.core.configJson;
+		// 生成xray的config.json文件
+		var configPath = ..io.joinpath(..io.splitpath(corePath).dir,outConfigJsonName);
+		//debug.log.print(configPath);
+		var jsonPath,err = ..xray.core.configJson.writeSearcherOutboundConfig(
+			..io.joinpath(..io.splitpath(corePath).dir,outConfigJsonName)
+			,outbound,1081,1082,proxyTag);
+	
+		if(!jsonPath){
+						
+			return false,err:"启动失败,写入配置文件遇到错误！"; 
+		}
+	
+		prcsCmd,err = ..process.popen(corePath,' api',' ado','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,outConfigJsonName));
+		return   ..string.match(prcsCmd.read(-1),proxyTag);
+		//debug.log.print("添加配置：")
+		//console.dump(json);
+		//console.dump(prcsCmd);
+		//var err;
+		//prcsxray,err = ..process.popen(corePath,"-c=config.json" );
+
+	
+
+	}
+	else {
+		//sleep(1000);
+		frmXray.setSearcherTimer();
+	}
+	
+	
+	//..publish("uiCommand.print","已启动代理服务器，SOCKS端口:" + socksProxyPort + " HTTP端口:" + httpProxPort) 
+	return true;
+}
+
+//新的删除出口服务器函数，修改自stopSearcher函数
+cleanOutbound = function(editor,outbound,proxyTag){
+	import console
+	
+	var corePath = getPath(editor.hwnd);
+	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
+	return   ..string.match(prcsCmd.read(-1),proxyTag);
+		//debug.log.print("删除配置：")
+		//console.dump(json);
+		//var err;
+		//prcsxray,err = ..process.popen(corePath,"-c=config.json" );
+
+	
+
+
+	
+	//..publish("uiCommand.print","已启动代理服务器，SOCKS端口:" + socksProxyPort + " HTTP端口:" + httpProxPort) 
+	//return true;
+}
 //开始搜索
 startSearcher = function(editor,outbound){
 	import debug

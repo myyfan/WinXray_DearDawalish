@@ -19,7 +19,7 @@
 				<file name="jsonConfig.aardio" path="forms\main\config\jsonConfig.aardio" comment="forms\main\config\jsonConfig.aardio"/>
 				<file name="serversConfig.aardio" path="forms\main\config\serversConfig.aardio" comment="forms\main\config\serversConfig.aardio"/>
 				<file name="subscriptionConfig.aardio" path="forms\main\config\subscriptionConfig.aardio" comment="forms\main\config\subscriptionConfig.aardio"/>
-				<folder name="coreConfigs" path="forms\main\config\coreConfigs" comment="forms\main\config\coreConfigs">
+				<folder name="coreConfigs" path="forms\main\config\coreConfigs" comment="forms\main\config\coreConfigs" local="false" embed="false" ignored="false">
 					<file name="default.json" path="forms\main\config\coreConfigs\default.json" comment="forms\main\config\coreConfigs\default.json"/>
 					<file name="xray.rules.json" path="forms\main\config\coreConfigs\xray.rules.json" comment="forms\main\config\coreConfigs\xray.rules.json"/>
 				</folder>

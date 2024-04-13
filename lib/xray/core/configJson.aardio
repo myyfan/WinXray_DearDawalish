@@ -487,7 +487,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort){
 	return jsonPath;
 }
 
-writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
+writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort,proxyTag){
 	import console
 	/*
 	以config.core.default为模板，并根据节点信息修改参数，生成最终代理节点配置
@@ -536,11 +536,11 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 	
 	var socksInbounds,httpInbounds;
 	for(k,ib in currentCore.inbounds){
-		if(ib.tag == "proxySearcher"){
+		if(ib.tag == "proxy"){
 			socksInbounds = ib;
 			socksInbounds.port = sockPort; 
 		} 
-		elseif(ib.tag == "http_proxySearcher"){
+		elseif(ib.tag == "http_proxy"){
 			httpInbounds = ib;
 			httpInbounds.port = httpPort; 
 		} 
@@ -609,7 +609,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 					disableSessionResumption = outbound.disableSessionResumption;
 				} : null;
 			};
-			tag="proxySearcher"
+			tag=proxyTag
 		};
 		
 		if( outbound.network == "ws" ){
@@ -732,7 +732,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 					serverName = outbound.sni;
 				} : null
 			};
-			tag="proxySearcher"
+			tag=proxyTag
 		};
 		
 		if( outbound.network == "ws" ){
@@ -850,7 +850,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 					serverName = outbound.sni;
 				} : null
 			};
-			tag="proxySearcher"
+			tag=proxyTag
 		};
 		
 		if( outbound.network == "ws" ){
@@ -893,7 +893,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 			streamSettings={
 				network = outbound.network : "tcp";
 			};
-			tag="proxySearcher"
+			tag=proxyTag
 		};
 		
 		..table.assign(proxyOutboundInCore,ob); 
@@ -920,7 +920,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 			streamSettings={
 				network = outbound.network : "tcp";
 			};
-			tag="proxySearcher"
+			tag=proxyTag
 		};
 			
 		if(#outbound.id){
@@ -960,7 +960,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort){
 					allowInsecure = !!outbound.allowInsecure;
 				} : null;
 			};
-			tag="proxySearcher"
+			tag=proxyTag
 		};
 			
 		if(#outbound.id){

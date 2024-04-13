@@ -98,6 +98,39 @@ config.__resetDefaultCore = function(){
                 "allowTransparent":false,
                 "udp":false
             }
+        },
+        {
+            "listen":"0.0.0.0",
+            "port":1091,
+            "protocol":"socks",
+            "tag":"proxySearcher",
+            "settings":{
+                "auth":"noauth",
+                "udp":true
+            },
+            "sniffing":{
+                "destOverride":{
+                    "http",
+                    "tls"
+                },
+                "enabled":true
+            }
+        },
+        {
+            "listen":"0.0.0.0",
+            "port":1092,
+            "protocol":"http",
+            "tag":"http_proxySearcher",
+            "settings":{
+
+            },
+            "sniffing":{
+                "destOverride":{
+                    "http",
+                    "tls"
+                },
+                "enabled":true
+            }
         }
     },
     "outbounds":{
@@ -171,6 +204,14 @@ config.__resetDefaultCore = function(){
                     "api"
                 },
                 "outboundTag":"api",
+                "type":"field"
+            }, 
+                {
+                "inboundTag":{
+                    "proxySearcher",
+                    "http_proxySearcher"
+                },
+                "outboundTag":"proxySearcher",
                 "type":"field"
             },
             {

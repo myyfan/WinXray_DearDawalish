@@ -5,6 +5,7 @@ import wsock.tcp.server;
 import process.popen;
 import config;
 
+	
 namespace xray.core;
 
 socksProxyPort = null;
@@ -31,12 +32,23 @@ isInboundPortChanged = function(){
 }
 
 // xray进程
-var prcsxray;
+ prcsxray =null ;
+
+	import debug
+	import debug.log
+	import console
+//console.dump(prcsxray)
+//prcsxray = null;
 // xray启动中，注意最后需要置为false表示启动结束，否则再次选择节点时会失败
 var xrayStarting;
 import process.job.limitKill;
 // 重启xray
 restart = function(editor,outbound){
+	import debug
+	import debug.log
+	import console
+	//console.dump(prcsxray)
+	
     if(!outbound){ return null,"错误的出站代理服务器配置"  }
     if(_WINXP){
     	return null,"抱歉！Xray Core 不支持 Windows XP, 仅支持 Windows 7, Windows 10 以及更新操作系统。";  
@@ -130,6 +142,7 @@ restart = function(editor,outbound){
 	}
 
 	// 启动程序时点击按钮，prcsxray为空，进入分支
+	//console.dump(prcsxray);
 	if( ! prcsxray ){ 
 		import xray.core.configJson;
 		// 生成xray的config.json文件
@@ -182,9 +195,80 @@ restart = function(editor,outbound){
 	..publish("xrayCore.restarted",socksProxyPort,httpProxPort); 
 	
 	xrayStarting = false;
+	//console.dump(prcsxray);
 	return true;
 }
 
+//开始搜索
+startSearcher = function(editor,outbound){
+	import debug
+	import debug.log
+	import console
+	//debug.debug();
+	//console.dump(prcsxray);
+	
+	var corePath = getPath(editor.hwnd);
+	if(!corePath){ 
+		xrayStarting = false;
+		return false,"启动失败,未找到 xray.exe"; 
+	}  
+
+	// 启动程序时点击按钮，prcsxray为空，进入分支
+	//console.dump(prcsxray);
+	
+	if(prcsxray){ 
+		
+		import xray.core.configJson;
+		// 生成xray的config.json文件
+		var configPath = ..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json");
+		//debug.log.print(configPath);
+		var jsonPath,err = ..xray.core.configJson.writeSearcherOutboundConfig(
+			..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json")
+			,outbound,1091,1092);
+	
+		if(!jsonPath){
+						
+			return false,err:"启动失败,写入配置文件遇到错误！"; 
+		}
+	
+		prcsCmd,err = ..process.popen(corePath,' api',' ado','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
+		return   ..string.match(prcsCmd.read(-1),"proxySearcher");
+		//debug.log.print("添加配置：")
+		//console.dump(json);
+		//console.dump(prcsCmd);
+		//var err;
+		//prcsxray,err = ..process.popen(corePath,"-c=config.json" );
+
+	
+
+	}
+	else {
+		//sleep(1000);
+		frmXray.setSearcherTimer();
+	}
+	
+	
+	//..publish("uiCommand.print","已启动代理服务器，SOCKS端口:" + socksProxyPort + " HTTP端口:" + httpProxPort) 
+	return true;
+}
+stopSearcher = function(editor,outbound){
+	import console
+	
+	var corePath = getPath(editor.hwnd);
+	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
+	return   ..string.match(prcsCmd.read(-1),"proxySearcher");
+		//debug.log.print("删除配置：")
+		//console.dump(json);
+		//var err;
+		//prcsxray,err = ..process.popen(corePath,"-c=config.json" );
+
+	
+
+
+	
+	//..publish("uiCommand.print","已启动代理服务器，SOCKS端口:" + socksProxyPort + " HTTP端口:" + httpProxPort) 
+	//return true;
+}
 stop = function(){
 	..xray.core.ssr.stop();
 	
@@ -368,7 +452,7 @@ updateCore = function(){
 			} 
 	}
 	else {
-		..mainForm.disabled = false;
+		..mainForm.disabled = false; 
 		self.lastDownloadingCoreFailed = true; 
 	}
 }

@@ -15,7 +15,7 @@ debug.log.print( debug.traceback(,"调用栈",2));
 
 dbg.call=null
 */
-debug.log.print( "debug" )
+//debug.log.print( "debug" )
 
 
 /*启动参数检测{{*/

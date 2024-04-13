@@ -57,13 +57,14 @@ start = function(){
 				import web.json;
 				var cmdText = '"outbound>>>proxy>>>traffic>>>downlink"';
 				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:1084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:1084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
+				//console.dumpTable(prcsCmd)
 				var json = ..web.json.tryParse(prcsCmd.read(-1));
 				import debug.log
 				import console
 				
 			
-			//console.dumpTable(json.stat)
-		a=json.stat[1]
+				
+				a=json.stat[1]
 			//console.dumpTable(a)
 		/*
 	b=a.name

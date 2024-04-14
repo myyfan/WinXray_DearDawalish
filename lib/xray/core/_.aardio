@@ -231,6 +231,11 @@ addOutbound = function(frmXray,editor,outbound,proxyTag,outConfigJsonName){
 		}
 	
 		prcsCmd,err = ..process.popen(corePath,' api',' ado','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,outConfigJsonName));
+/*
+		var a = prcsCmd.read(-1);
+		console.dump(a);
+		return   ..string.match(a,proxyTag);
+*/
 		return   ..string.match(prcsCmd.read(-1),proxyTag);
 		//debug.log.print("添加配置：")
 		//console.dump(json);
@@ -252,11 +257,16 @@ addOutbound = function(frmXray,editor,outbound,proxyTag,outConfigJsonName){
 }
 
 //新的删除出口服务器函数，修改自stopSearcher函数
-cleanOutbound = function(editor,outbound,proxyTag){
+deleteOutbound = function(editor,outbound,proxyTag,outConfigJsonName){
 	import console
 	
 	var corePath = getPath(editor.hwnd);
-	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
+	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:1084',..io.joinpath(..io.splitpath(corePath).dir,outConfigJsonName));
+	/*
+var a = prcsCmd.read(-1);
+	console.dump(a);
+	return   ..string.match(a,proxyTag);
+*/
 	return   ..string.match(prcsCmd.read(-1),proxyTag);
 		//debug.log.print("删除配置：")
 		//console.dump(json);

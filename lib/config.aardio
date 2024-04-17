@@ -236,11 +236,6 @@ config.__resetDefaultCore = function(){
                 },
                 "outboundTag":"direct",
                 "type":"field"
-            },
-            {
-                "network":"udp,tcp",
-                "outboundTag":"direct",
-                "type":"field"
             }
         }
     },
@@ -253,6 +248,25 @@ config.__resetDefaultCore = function(){
 if(!config.core.default){
 	config.__resetDefaultCore();
 }
+
+//config.__resetDefaultCoreOutbounds = function(){
+	config.core.outBoundDefault =  {
+    
+    	"outbounds":{
+        	{
+            	"tag":"proxy"
+        	}
+    	}
+	
+	}
+//}
+
+
+/*
+if(!config.core.outBoundDefault){
+	config.__resetDefaultCoreOutbounds();
+}
+*/
 
 // 将core配置的json页面隐藏掉，就不可能会有删除第二个入站的可能了，那么这里就可以注释掉了
 if(!config.core.default.inbounds[2]){

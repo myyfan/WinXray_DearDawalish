@@ -123,13 +123,37 @@
     "routing": {
         "domainStrategy": "IPIfNonMatch",
         "rules": [
-        {
+            {
+                "type": "field",
+                "outboundTag": "Reject",
+                "domain": [
+                    "geosite:category-ads-all",
+                    "geosite:win-spy"
+                ]
+            },
+            {
                 "inboundTag":[
                     "api"
                 ],
                 "outboundTag":"api",
                 "type":"field"
             },
+            {
+                "inboundTag":[
+                    "proxySearcher",
+                    "http_proxySearcher"
+                ],
+                "outboundTag":"proxySearcher",
+                "type":"field"
+            },
+            {
+                "type": "field",
+                "outboundTag": "Direct",
+                "ip": [
+                    "geoip:cn",
+                    "geoip:private"
+                ]
+            },            
             {
                 "type": "field",
                 "outboundTag": "Direct",
@@ -146,15 +170,7 @@
                 ],
                 "network": "udp",
                 "port": 53
-            },
-            {
-                "type": "field",
-                "outboundTag": "Reject",
-                "domain": [
-                    "geosite:category-ads-all",
-                    "geosite:win-spy"
-                ]
-            },
+            },            
             {
                 "type": "field",
                 "outboundTag": "proxy",
@@ -172,28 +188,27 @@
                 ]
             },
             {
+                "domain":[
+                    "geosite:gfw"
+                ],
+                "outboundTag":"proxy",
+                "type":"field"
+            },
+            {
                 "type": "field",
                 "outboundTag": "proxy",
                 "domain": [
                     "geosite:geolocation-!cn"
                 ]
-            },
+            },     
             {
-                "type": "field",
-                "outboundTag": "Direct",
-                "domain": [
-                    "geosite:cn",
-                    "geosite:private"
-                ]
-            },
-            {
-                "type": "field",
-                "outboundTag": "Direct",
-                "ip": [
+                "ip":[
                     "geoip:cn",
                     "geoip:private"
-                ]
-            },
+                ],
+                "outboundTag":"direct",
+                "type":"field"
+            },       
             {
                 "type": "field",
                 "outboundTag": "proxy",

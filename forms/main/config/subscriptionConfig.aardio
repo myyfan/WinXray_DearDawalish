@@ -24,6 +24,7 @@ winform.listview.insertColumn("",20)
 winform.listview.insertColumn("状态",50) 
 winform.listview.insertColumn("备注",150) 
 winform.listview.insertColumn("订阅地址",-1) 
+winform.listview.enableDoubleBuffering();
 winform.listview.checkbox = true;
 winform.listview.gridLines = 0;
 
@@ -77,6 +78,106 @@ subscribe("uiCommand.subscriptionNew",function(subItem,existIndex){
 	winform.listview.setChecked(item,true);
 } ) 
 
+//手动排序函数
+winform.changeOrder=function(selectedItemIndex,direction,top){//direction为true则上移,false下移
+    if(!selectedItemIndex) return;
+    var dc = direction ? -1 : 1;
+	var cfgSubscribeUrls = config.subscribe.subscribeUrls;
+	var subscribes=..table.clone(config.subscribe.subscribeUrls);
+
+	import console
+	import debug
+	import debug.log
+/*	debug.log.print(#subscribes)
+	
+	debug.debug()
+	console.dumpTable(subscribes)
+	var temp =subscribes[2]
+	subscribes[2]=subscribes[3]
+	
+	console.dumpTable(subscribes)
+	console.dumpTable(temp)
+	subscribes[3]=subscribes[temp]
+	//..table.insert(subscribes,temp,3)
+	console.dumpTable(subscribes)
+*/
+	//在配置文件中交换两个订阅的位置
+	if(top){
+		var temp = cfgSubscribeUrls[selectedItemIndex];
+		..table.remove(cfgSubscribeUrls,selectedItemIndex);
+		..table.unshift(cfgSubscribeUrls,temp);
+		reloadSubscriptions();
+		winform.listview.setSelected(1)
+	}
+	else {		
+		var temp = cfgSubscribeUrls[selectedItemIndex+dc];
+		//console.dumpTable(temp)
+		..table.remove(cfgSubscribeUrls,selectedItemIndex+dc)
+		//console.dumpTable(cfgSubscribeUrls)
+		..table.insert(cfgSubscribeUrls,temp,selectedItemIndex)
+		//console.dumpTable(cfgSubscribeUrls)
+		if(tostring(cfgSubscribeUrls[selectedItemIndex+dc].checked) == "启用"){
+			winform.listview.setChecked(selectedItemIndex+dc,true);
+		}
+		else {
+			winform.listview.setChecked(selectedItemIndex+dc,false);
+		}
+		if(tostring(cfgSubscribeUrls[selectedItemIndex].checked) == "启用"){
+			winform.listview.setChecked(selectedItemIndex,true);
+		}
+		else {
+			winform.listview.setChecked(selectedItemIndex,false);
+		}	
+		winform.listview.setItemText(cfgSubscribeUrls[selectedItemIndex+dc].ps,selectedItemIndex+dc,3)
+		winform.listview.setItemText(cfgSubscribeUrls[selectedItemIndex+dc].url,selectedItemIndex+dc,4)
+		winform.listview.setItemText(cfgSubscribeUrls[selectedItemIndex].ps,selectedItemIndex,3)
+		winform.listview.setItemText(cfgSubscribeUrls[selectedItemIndex].url,selectedItemIndex,4)
+		
+		
+		
+		if(tostring(temp.checked) == "启用"){
+			var checked = true
+		}
+		//reloadSubscriptions();
+		winform.listview.setSelected(selectedItemIndex,false)
+		winform.listview.setSelected(selectedItemIndex+dc)
+		
+/*
+		console.dumpTable(cfgSubscribeUrls)
+		
+		debug.debug()
+*/
+		
+
+/*
+		cfgSubscribeUrls[selectedItemIndex+dc]=subscribes[selectedItemIndex];
+		cfgSubscribeUrls[selectedItemIndex]=subscribes[selectedItemIndex+dc];
+*/
+	}
+	
+	
+	//debug.debug()
+	//winform.listview.replaceItems(cfgSubscribeUrls)
+	//config.proxy.save();
+	//记录启用状态
+/*
+	var checked = table.array();
+	for(i=#cfgSubscribeUrls;1;-1){
+		var sub = cfgSubscribeUrls[i];
+		if(tostring(sub.checked) == "启用"){
+			table.push(checked,i);
+		}
+	}
+	//重显订阅列表并勾选启用项
+	winform.listview.setTable(cfgSubscribeUrls);
+	grid.setTable(cfgSubscribeUrls);
+*/
+	//winform.listview.checked = checked;
+	//设置选中项
+	//if(top){winform.listview.setSelected(1)}
+	//else {winform.listview.setSelected(selectedItemIndex+dc)}
+}
+
 //编辑变更值会触发下面的事件
 grid.onEditChanged = function(text,iItem,iSubItem){
 	var name = config.subscribe.subscribeUrls.fields[iSubItem] 
@@ -105,7 +206,35 @@ grid.onEditChanged = function(text,iItem,iSubItem){
 		winform.msgErr("错误的订阅索引")
 	}
 } 
-
+//响应按键事件
+import win.ui.accelerator;
+var accelerator = win.ui.accelerator({
+    { //按下DELETE键
+        vkey = '46'; 
+        oncommand = function(){
+            var selectedItems = winform.listview.selected;
+            if(#selectedItems){ winform.removesub(selectedItems) }
+        }
+    };
+    {//ctrl+↑
+        ctrl=true;vkey = '38'; 
+        oncommand = function(){
+            var selectedItems = winform.listview.selected;
+            if(selectedItems[1]!=1){
+                winform.changeOrder(selectedItems[1],true);
+            }
+        }
+    };  
+    {//ctrl+↓
+        ctrl = true; vkey = '40'; 
+        oncommand = function(){
+            var selectedItems = winform.listview.selected;
+            if(selectedItems[1]!=#config.proxy.subscribeUrls){
+				winform.changeOrder(selectedItems[1],false); 
+            }
+        }
+    };  
+},winform);
 winform.btnUpdate.skin(style.primaryButton);
 winform.btnUpdate.oncommand = function(id,event){
 
@@ -208,9 +337,10 @@ winform.btnAdd.oncommand = function(id,event){
 	//console.dump(url);
 	if(url ){
 		for(i=1;#url;1){
-			console.dump(url[i]);
+			//console.dump(url[i]);
 			if(url[i]=='/'#){
-				url[i] = "http://github.com" + url[i];
+				if(!..string.find(url[i],"/<blob>|<raw>")){ url[i] = "https://raw.githubusercontent.com" + url[i] }
+				else { url[i] = "http://github.com" + url[i]; }				
 			}
 			
 			
@@ -223,6 +353,24 @@ winform.btnAdd.oncommand = function(id,event){
 					ps = tUrl.host
 				}
 			} 
+			
+				//查重
+			var repeat = -1;
+			var cfgSubscribeUrls = config.subscribe.subscribeUrls;
+			for(j=1;#cfgSubscribeUrls;1){
+				if(cfgSubscribeUrls[j].url == url[i]){
+					repeat = j;
+					break;
+				}
+			}
+			if(repeat && (repeat!==-1)){
+				winform.listview.setChecked(repeat,true);
+				..mainForm.msgOk('此订阅与第 '+repeat+' 个订阅重复\n已将此订阅设为"启用"',500);
+				//winform.msgFrown('此订阅与第 '+repeat+' 个订阅重复\n已将此订阅设为"启用"');
+				continue ; 
+			}
+			
+			
 			
 			config.subscribe.subscribeUrls[winform.listview.count+1] = {checked="启用";ps=ps;url=url[i]}
 			var item = winform.listview.addItem({
@@ -325,6 +473,22 @@ winform.listview.onnotify = function(id,code,ptr){
 				xray.outbounds.updateSubscription({[currentSubscribeUrl]=true});
 			});
 			popmenu.add()
+			
+			if(selectedItems[1]!=1){
+				popmenu.add("上移至顶",function(){
+					winform.changeOrder(selectedItems[1],,true);
+				})
+				popmenu.add('上移(ctrl+↑)',function(id){
+					winform.changeOrder(selectedItems[1],true);
+				})
+			}
+			if(selectedItems[1]!=#config.proxy.subscribeUrls){
+				popmenu.add('下移(ctrl+↓)',function(id){
+					winform.changeOrder(selectedItems[1],false); 
+				})
+			}
+			
+			popmenu.add();
 		}
 		popmenu.add('删除选中',function(id){
 			winform.btnRemove.oncommand();

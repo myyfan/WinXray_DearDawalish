@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<project ver="10" name="WinXray" libEmbed="true" icon="\forms\ico\app.ico" ui="win" output="WinXray.exe" CompanyName="WinXray" FileDescription="网络代理通用客户端" LegalCopyright="Copyright (C) WinXray" ProductName="WinXray" InternalName="WinXray" FileVersion="4.6.9.63" ProductVersion="4.6.9.63" publishDir="\WinXray" dstrip="false" local="false" ignored="false">
+<project ver="10" name="WinXray" libEmbed="true" icon="\forms\ico\app.ico" ui="win" output="WinXray.exe" CompanyName="WinXray" FileDescription="网络代理通用客户端" LegalCopyright="Copyright (C) WinXray" ProductName="WinXray" InternalName="WinXray" FileVersion="4.6.9.64" ProductVersion="4.6.9.64" publishDir="\WinXray" dstrip="false" local="false" ignored="false">
 	<file name="main" path="main.aardio"/>
 	<folder name="窗体" path="forms" comment="" embed="true" local="false" ignored="false">
 		<folder name="ico" path="forms\ico" comment="forms\ico" local="false" embed="false" ignored="false">
@@ -16,7 +16,6 @@
 				<file name="ConfigPage.aardio" path="forms\main\config\ConfigPage.aardio" comment="forms\main\config\ConfigPage.aardio"/>
 				<file name="coreConfig.aardio" path="forms\main\config\coreConfig.aardio" comment="forms\main\config\coreConfig.aardio"/>
 				<file name="githubMirrorConfig.aardio" path="forms\main\config\githubMirrorConfig.aardio" comment="forms\main\config\githubMirrorConfig.aardio"/>
-				<file name="jsonConfig.aardio" path="forms\main\config\jsonConfig.aardio" comment="forms\main\config\jsonConfig.aardio"/>
 				<file name="serversConfig.aardio" path="forms\main\config\serversConfig.aardio" comment="forms\main\config\serversConfig.aardio"/>
 				<file name="subscriptionConfig.aardio" path="forms\main\config\subscriptionConfig.aardio" comment="forms\main\config\subscriptionConfig.aardio"/>
 				<folder name="coreConfigs" path="forms\main\config\coreConfigs" comment="forms\main\config\coreConfigs" local="false" embed="false" ignored="false">

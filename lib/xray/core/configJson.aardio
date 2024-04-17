@@ -497,15 +497,11 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort,prox
 		outbound.port = tonumber(outbound.port);
 	}
 	
-	var currentCore = ..table.clone(..config.core.default);
+	var currentCore = ..table.clone(..config.core.outBoundDefault);
 	if(! ..table.isArray(currentCore.outbounds) ){
 		return null,"错误的出站代理服务器配置" 
 	}
-	
-	var inboundsInCore = currentCore.inbounds;
-	if(! ..table.isArray(inboundsInCore) ){
-		return null,"错误的入站代理服务器配置" 
-	}
+
 	
 	var proxyOutboundInCore;
 	//console.dump(currentCore);
@@ -535,24 +531,8 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort,prox
 	}
 	
 	var socksInbounds,httpInbounds;
-	for(k,ib in currentCore.inbounds){
-		if(ib.tag == "proxy"){
-			socksInbounds = ib;
-			socksInbounds.port = sockPort; 
-		} 
-		elseif(ib.tag == "http_proxy"){
-			httpInbounds = ib;
-			httpInbounds.port = httpPort; 
-		} 
-	}
-		
-	if( type(socksInbounds) !="table"  ){
-		return null,"未找到默认 SOCKS 入站代理服务器配置节点" 
-	}
-	
-	if( type(httpInbounds) !="table"  ){
-		return null,"未找到默认 HTTP 入站代理服务器配置节点" 
-	}
+
+
 	
 	// 如果代理节点有tls属性，且没有sni属性
 	if(#outbound.tls && !outbound.sni){

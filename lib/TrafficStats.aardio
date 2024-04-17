@@ -87,8 +87,14 @@ start = function(){
 				import process.popen;
 				import web.json;
 				var cmdText = '"outbound>>>proxy>>>traffic>>>uplink"';
-				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:1084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:1084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
-				var json = ..web.json.tryParse(prcsCmd.read(-1));
+				var json ;
+				var i = 3 ; 
+				do {
+					prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:1084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:1084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
+					json = ..web.json.tryParse(prcsCmd.read(-1));
+					i--;
+				}while( !json && i > 0)
+				
 				
 				import console
 				import debug
@@ -114,8 +120,14 @@ start = function(){
 				import process.popen;
 				import web.json;
 				var cmdText = '"outbound>>>proxy-out>>>traffic>>>downlink"';
-				prcsCmd = ..process.popen(corePath,corePath,"api",port,"StatsService.GetStats",'"name:'+cmdText+'reset:true"');
-				var json = string.replace(string.replace(prcsCmd.read(-1),"\<",'\{'),"\>\s*$",'\}');
+				
+				var json ;
+				var i = 3 ; 
+				do {
+					prcsCmd = ..process.popen(corePath,corePath,"api",port,"StatsService.GetStats",'"name:'+cmdText+'reset:true"');
+					var json = string.replace(string.replace(prcsCmd.read(-1),"\<",'\{'),"\>\s*$",'\}');
+					i--;
+				}while( !json && i > 0)
 				var table = ..web.json.tryParse(json);
 				var value = (json && json.stat.value) ? json.stat.value : false;
 				return value; 

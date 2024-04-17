@@ -306,7 +306,7 @@ switchOutbound = function(outboundIndex,outboundAddress){//定时检测标志,�
 		publish("uiCommand.restartxrayCore");
 		return ; 
 	} 
-
+	if(trafficTimerId){ frmXray.clearInterval(trafficTimerId); }
 	..publish("activeOutbound",false); //发布活动地址失效
 		//console.dump(xray.core.prcsxray);
 		//debug.log.print(xray.core.prcsxray);
@@ -317,7 +317,7 @@ switchOutbound = function(outboundIndex,outboundAddress){//定时检测标志,�
 	var started;
 	if(!xray.core.prcsxray || outbound.protocol == "ssr" || outbound.protocol == "naive" ){
 		started = xray.core.restart(frmXray.edit,outbound);//重启内核
-		debug.log.print("内核重启")
+		//debug.log.print("内核重启")
 		
 	/*
 		console.dump(xray.core.prcsxray);
@@ -415,7 +415,7 @@ testOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTesting){
 					
 					lastStatusCode = restClient.lastStatusCode;
 					
-					debug.log.print("序号:"+outboundIndex+" 活动检测器：",lastStatusCode,",timerTesting为：",timerTesting,",地址"+outboundAddress);	
+					//debug.log.print("序号:"+outboundIndex+" 活动检测器：",lastStatusCode,",timerTesting为：",timerTesting,",地址"+outboundAddress);	
 					restClient.close();
 					if( lastStatusCode || lastStatusCode == 204 ) {
 
@@ -548,9 +548,11 @@ frmXray.onStartXrayComplete = function(outboundIndex,outboundAddress,timerTestin
 	listview.activeOutboundAddress = address;//listview活动地址设置
 
 	// 如果当前设定的出站代理为"不可用"，则清空其状态
+/*
 	if(listview.getItemText(outboundIndex,7)=="不可用"){
 		listview.setItemText("",outboundIndex,7);
 	}
+*/
 	
 	// 重写回调函数，新的可用节点不再存储到frmXray.validOutbounds中
 /*
@@ -639,7 +641,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 	}
 */	
 		
-	if(trafficTimerId){ frmXray.clearInterval(trafficTimerId); }
+	//if(trafficTimerId){ frmXray.clearInterval(trafficTimerId); }
 	//frmXray.listview.setItemText("",outboundIndex,8);
 	
 	
@@ -671,7 +673,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 	if(enableRetry){
 		if(config.proxy.outbounds[outboundIndex].failedCount) {
 			config.proxy.outbounds[outboundIndex].failedCount += 1;//失败计数器,手动模式时不起作用
-			debug.debug();
+			//debug.debug();
 		}
 		else {
 			config.proxy.outbounds[outboundIndex].failedCount = 1;
@@ -741,10 +743,12 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 						}
 						
 					}
-					if(config.proxy.outbounds[next[1]].failedCount) debug.log.print("failedCount为"+config.proxy.outbounds[next[1]].failedCount);
+					/*
+if(config.proxy.outbounds[next[1]].failedCount) debug.log.print("failedCount为"+config.proxy.outbounds[next[1]].failedCount);
 					else {
 						debug.log.print("failedCount为0或NULL");
 					}
+*/
 					
 				}				
 			}
@@ -777,7 +781,10 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 			else {				
 				listview.setItemText("异常,测试下一个...",outboundIndex,8);//手动切换不能把当前代理服务器置为不可用
 				if(config.proxy.outbounds[outboundIndex].lastValiable) listview.setItemText("上次可用："+config.proxy.outbounds[outboundIndex].lastValiable,outboundIndex,8);
-
+				elseif(config.proxy.outbounds[outboundIndex].failedCount){
+					listview.setItemText("失败次数："+config.proxy.outbounds[outboundIndex].failedCount,outboundIndex,8);
+				}
+				
 				frmXray.edit.print("服务器异常：",listview.getItemText(outboundIndex,2)); 
 				frmXray.edit.print("正在尝试连接：",next[2]); 	
 			}
@@ -1345,9 +1352,11 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 						
 						frmXray.btnTcping.disabledText = null;
 						
+/*
 						for b,v in table.eachIndex(config.proxy.outbounds){
 							frmXray.listview.setItemText("",b,8);
 						}
+*/
 						//activeOutbound(currentIdx,frmXray.listview.getItemText(currentIdx,2),false)
 						switchOutbound(currentIdx,frmXray.listview.getItemText(currentIdx,2),false)
 					}
@@ -1407,7 +1416,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 						var item = selectedItems[i];
 						if(autoConnect === false){
 							config.proxy.outbounds[item].autoConnect = null;
-							frmXray.listview.setItemText("",item,7);
+							//frmXray.listview.setItemText("",item,7);
 						}
 						else {
 							config.proxy.outbounds[item].autoConnect = false;
@@ -1727,7 +1736,7 @@ else {
 	}
 */
 	
-	var desc = frmXray.listview.getColumnImage(12) == 0;
+	var desc = frmXray.listview.getColumnImage(12) != 0;
 	if(desc){
 		table.sort(outbounds,function(b){ 
 			return owner.downSpeed > b.downSpeed;
@@ -1815,7 +1824,7 @@ else {
 	}
 */
 	
-	var desc = frmXray.listview.getColumnImage(8) == 0;
+	var desc = frmXray.listview.getColumnImage(8) != 0;
 	if(desc){
 		table.sort(outbounds,function(b){ 
 			return time(owner.lastValiable) > time(b.lastValiable);
@@ -2049,7 +2058,15 @@ subscribe("uiCommand.restartxrayCore",function(){
 			var c = outbounds[i].upSpeed;
 			var d = outbounds[i].downSpeed;
 			
-			if(config.proxy.outbounds[i].lastValiable) frmXray.listview.setItemText("上次可用："+config.proxy.outbounds[i].lastValiable,i,8);
+			if(config.proxy.outbounds[i].lastValiable) {
+				frmXray.listview.setItemText("上次可用："+config.proxy.outbounds[i].lastValiable,i,8);
+			}
+			elseif(outbounds[i].failedCount){
+				frmXray.listview.setItemText("失败次数："+outbounds[i].failedCount,i,8);
+				//listview.ensureVisible(i);
+				//sleep(200)
+				//debug.debug();
+			}
 			if(a)	{ frmXray.listview.setItemText(math.size64(a).format(),i,9); }
 			if(b)	{ frmXray.listview.setItemText(math.size64(b).format(),i,10); }
 			if(c)	{ frmXray.listview.setItemText(math.size64(c).format(),i,11); }
@@ -2214,7 +2231,7 @@ frmXray.AutoTest = function(id,event){
 	import debug;
 	import debug.log;	
 	//console.dump(testTimerId);
-	debug.log.print("定时器被调用：",testTimerId);
+	//debug.log.print("定时器被调用：",testTimerId);
 	//debug.debug();
 	
 	
@@ -2416,7 +2433,13 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 				outbounds[outboundIndex].failedCount++;
 			}
 		}	 
-		if(outbounds[outboundIndex].lastValiable) frmXray.listview.setItemText("上次可用："+outbounds[outboundIndex].lastValiable,outboundIndex,8);
+		if(outbounds[outboundIndex].lastValiable) {
+			frmXray.listview.setItemText("上次可用："+outbounds[outboundIndex].lastValiable,outboundIndex,8);
+		}
+		elseif(outbounds[outboundIndex].failedCount){
+			frmXray.listview.setItemText("失败次数："+outbounds[outboundIndex].failedCount,outboundIndex,8);
+		}
+		
 		
 	}
 	else {
@@ -2436,7 +2459,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 			return ;
 		}
 		if(!xray.core.prcsxray ) {
-			//debug.log.print("frmXray.listview.activeOutboundIndex is null.")
+			debug.log.print("frmXray.listview.activeOutboundIndex is null.")
 			
 			setSearcherTimer();
 			return ;
@@ -2449,7 +2472,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 		var next = outbounds[frmXray.searcherIndex]; 
 		//debug.debug();
 		if(next.protocol == "ssr" || next.protocol == "naive" ){
-			console.dump(frmXray.searcherIndex);
+			//switchOutbound(frmXray.searcherIndex,next.address);
 			frmXray.searcherIndex ++;
 			frmXray.searchingBackground = false;
 			frmXray.chkSearchMode.oncommand();

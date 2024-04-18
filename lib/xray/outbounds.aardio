@@ -293,7 +293,7 @@ importFromString = function(str,subscribeUrl){
 			var sub = cfgSubscribeUrls[i]  
 			if( (sub.url === str) ){ 
 				if(#sub.ps) title = '正在获取订阅源: ' + sub.ps;
-				..config.proxy.save(); 
+				//..config.proxy.save(); 
 			}
 		} 
 	

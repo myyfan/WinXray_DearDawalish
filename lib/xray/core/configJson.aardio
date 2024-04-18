@@ -487,7 +487,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort){
 	return jsonPath;
 }
 
-writeSearcherOutboundConfig  = function(jsonPath,outbound,sockPort,httpPort,proxyTag){
+writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 	import console
 	/*
 	以config.core.default为模板，并根据节点信息修改参数，生成最终代理节点配置

@@ -2,7 +2,7 @@
     "inbounds": [
         {
             "listen": "127.0.0.1",
-            "port": 0,
+            "port": 1081,
             "protocol": "socks",
             "settings": {
                 "auth": "noauth",
@@ -19,7 +19,7 @@
         },
         {
             "listen": "127.0.0.1",
-            "port": 0,
+            "port": 1082,
             "protocol": "http",
             "settings": {},
             "sniffing": {
@@ -40,6 +40,39 @@
                 "address":"127.0.0.1",
                 "allowTransparent":false,
                 "udp":false
+            }
+        },
+        {
+            "listen":"0.0.0.0",
+            "port":1091,
+            "protocol":"socks",
+            "tag":"proxySearcher",
+            "settings":{
+                "auth":"noauth",
+                "udp":true
+            },
+            "sniffing":{
+                "destOverride":[
+                    "http",
+                    "tls"
+                ],
+                "enabled":true
+            }
+        },
+        {
+            "listen":"0.0.0.0",
+            "port":1092,
+            "protocol":"http",
+            "tag":"http_proxySearcher",
+            "settings":{
+
+            },
+            "sniffing":{
+                "destOverride":[
+                    "http",
+                    "tls"
+                ],
+                "enabled":true
             }
         }
     ],

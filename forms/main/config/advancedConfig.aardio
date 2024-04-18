@@ -8,11 +8,14 @@ btnUpdate={cls="plus";text="保 存";left=516;top=514;right=619;bottom=550;align
 chkEnableGitConfigGithub={cls="plus";text="设置 git 客户端启用 github.com 代理提速（支持https、ssh协议）";left=276;top=437;right=792;bottom=468;align="left";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=13};
 chkLan={cls="plus";text="允许来自局域网的连接";left=276;top=397;right=483;bottom=428;align="left";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=1};
 chkSystemStart={cls="plus";text="允许开机启动 WinXray";left=276;top=476;right=792;bottom=507;align="left";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=17};
-editHttpPort={cls="plus";left=278;top=126;right=358;bottom=150;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=14};
+editApiPort={cls="plus";left=456;top=127;right=509;bottom=151;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=33};
+editHttpPort={cls="plus";left=262;top=126;right=315;bottom=150;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=14};
 editLanPacUrl={cls="plus";left=280;top=357;right=699;bottom=381;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=11};
 editPacPort={cls="plus";left=278;top=281;right=358;bottom=305;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=2};
 editPacUrl={cls="plus";left=278;top=318;right=697;bottom=342;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=8};
-editSocksPort={cls="plus";left=278;top=91;right=358;bottom=115;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=3};
+editSearcherHttpPort={cls="plus";left=749;top=126;right=802;bottom=150;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=36};
+editSearcherScoksPort={cls="plus";left=750;top=91;right=804;bottom=115;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=34};
+editSocksPort={cls="plus";left=263;top=91;right=317;bottom=115;align="left";bgcolor=16777215;border={bottom=1;color=-8355712};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);notify=1;textPadding={bottom=1};z=3};
 hotkey={cls="hotkey";left=227;top=249;right=367;bottom=269;clip=1;db=1;dl=1;edge=1;z=26};
 lbMaxTestServers={cls="static";text="100";left=564;top=62;right=880;bottom=88;bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-13);transparent=1;z=25};
 lbTestInterval={cls="static";text="15秒";left=564;top=26;right=823;bottom=52;bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-13);transparent=1;z=20};
@@ -25,13 +28,16 @@ radioSocksProxy={cls="plus";text="SOCKS4";left=273;top=205;right=371;bottom=236;
 static={cls="static";text="SOCKS 代理服务端口：";left=68;top=95;right=266;bottom=121;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=4};
 static10={cls="static";text="PAC代理模式：";left=8;top=170;right=266;bottom=196;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=30};
 static11={cls="static";text="全局代理模式：";left=8;top=208;right=266;bottom=234;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=31};
+static12={cls="static";text="搜索器SOCKS 代理服务端口：";left=536;top=95;right=753;bottom=121;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=35};
+static13={cls="static";text="搜索器HTTP  代理服务端口：";left=495;top=132;right=753;bottom=158;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=37};
 static2={cls="static";text="PAC 端口：";left=136;top=286;right=266;bottom=312;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=6};
 static3={cls="static";text="本机 PAC 地址：";left=108;top=325;right=266;bottom=351;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=9};
 static4={cls="static";text="局域网 PAC 地址：";left=108;top=364;right=266;bottom=390;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=12};
-static5={cls="static";text="HTTP  代理服务端口：";left=8;top=132;right=266;bottom=158;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=15};
-static6={cls="static";text="支持 SOCKS4,SOCKS4A,SOCKS5";left=366;top=96;right=653;bottom=122;bgcolor=16777215;color=5921370;db=1;dl=1;font=LOGFONT(h=-13);transparent=1;z=16};
+static5={cls="static";text="HTTP  代理服务端口：";left=8;top=132;right=266;bottom=158;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);notify=1;transparent=1;z=15};
+static6={cls="static";text="支持 SOCKS4,SOCKS4A,SOCKS5";left=320;top=96;right=517;bottom=122;bgcolor=16777215;color=5921370;db=1;dl=1;font=LOGFONT(h=-13);transparent=1;z=16};
 static7={cls="static";text="检查服务器异常间隔时间：";left=21;top=19;right=266;bottom=45;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=19};
 static8={cls="static";text="允许同时测速的服务器数：";left=21;top=57;right=266;bottom=83;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);transparent=1;z=24};
+static9={cls="static";text="api服务端口：";left=351;top=132;right=458;bottom=158;align="right";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);notify=1;transparent=1;z=32};
 tbMaxTestServers={cls="plus";left=278;top=64;right=559;bottom=76;bgcolor=-2512093;border={radius=-1};color=23807;db=1;dl=1;foreRight=13;forecolor=-14911489;notify=1;paddingBottom=5;paddingTop=5;z=23};
 tbTestInterval={cls="plus";left=278;top=27;right=559;bottom=39;bgcolor=-2512093;border={radius=-1};color=23807;db=1;dl=1;foreRight=13;forecolor=-14911489;notify=1;paddingBottom=5;paddingTop=5;z=18}
 )
@@ -88,6 +94,11 @@ var onInboundsUpdated = function(){
 	var inbounds = ..config.core.default[["inbounds"]];
 	winform.editSocksPort.text = xray.core.socksProxyPort || inbounds[[1]][["port"]] || 1081;
 	winform.editHttpPort.text = xray.core.httpProxyPort || inbounds[[2]][["port"]] || 1082;
+	winform.editApiPort.text = xray.core.apiPort || inbounds[[3]][["port"]] || 1083;
+	winform.editSearcherScoksPort.text = xray.core.searcherSocksProxyPort || inbounds[[4]][["port"]] || 1091;
+	winform.editSearcherHttpPort.text = xray.core.searcherHttpProxyPort || inbounds[[5]][["port"]] || 1092;
+
+	
 	winform.chkLan.checked = inbounds[[1]][["listen"]] !== "127.0.0.1";
 	winform.btnOpenFirewall.disabled = !winform.chkLan.checked;
 }
@@ -125,19 +136,72 @@ winform.btnUpdate.oncommand = function(id,event){
 	config.proxy.useSocksPac = winform.radioSocksPac.checked;
 	xray.pacServer.updateUseHttpProxy(!config.proxy.useSocksPac);
 	
+	import debug
+	import debug.log
+
+	//socks代理端口
 	var client = wsock.tcp.client();  
 	var oldPort = xray.core.socksProxyPort;
-	if( tonumber(winform.editSocksPort.text)
-		&& tonumber(winform.editSocksPort.text) != oldPort
-		&& client.connectTimeout("127.0.0.1",tonumber(winform.editSocksPort.text) ,0.5) ){
-		winform.editSocksPort.editBox.showErrorTip(,"端口已被占用");
+	var port = tonumber(winform.editSocksPort.text) 
+	if( tonumber(port)
+		&& tonumber(port) != oldPort
+		&& client.connectTimeout("127.0.0.1",tonumber(port) ,0.5) ){
+		winform.editSocksPort.editBox.showErrorTip(,"端口"+tonumber(port)+"已被占用");
 		winform.btnUpdate.disabledText = null;
 		return client.close(); 
 	} 
 	client.close();  
 	
+	var restartCore = false;
+	
+	config.core.default.inbounds[1]["port"]  = port;
+	if(port!=oldPort){ 
+		restartCore = true;
+	}	
+	
+	//http代理端口
 	var client = wsock.tcp.client();  
-	var oldPacPort = xray.pacServer.getPort();
+	oldPort = xray.core.httpProxPort;
+	port = tonumber(winform.editHttpPort.text) 
+	if( tonumber(port)
+		&& tonumber(port) != oldPort
+		&& client.connectTimeout("127.0.0.1",tonumber(port) ,0.5) ){
+		winform.editHttpPort.editBox.showErrorTip(,"端口"+tonumber(port)+"已被占用");
+		winform.btnUpdate.disabledText = null;
+		return client.close(); 
+	} 
+	client.close();  
+	
+	
+	config.core.default.inbounds[2]["port"]  = port;
+	if(port!=oldPort){
+		restartCore = true;
+	}		
+	
+
+	//api端口
+	var client = wsock.tcp.client();  
+	oldPort = xray.core.apiPort;
+	port = tonumber(winform.editApiPort.text) 
+	if( tonumber(port)
+		&& tonumber(port) != oldPort
+		&& client.connectTimeout("127.0.0.1",tonumber(port) ,0.5) ){
+		winform.editApiPort.editBox.showErrorTip(,"端口"+tonumber(port)+"已被占用");
+		winform.btnUpdate.disabledText = null;
+		return client.close(); 
+	} 
+	client.close();  
+	
+	
+	config.core.default.inbounds[3]["port"]  = port;
+	if(port!=oldPort){
+		restartCore = true;
+	}	
+	
+	//PAC端口
+	var client = wsock.tcp.client();  
+	oldPacPort = xray.pacServer.getPort();
+	
 	if( tonumber(winform.editPacPort.text)
 		&& tonumber(winform.editPacPort.text) != oldPacPort
 		&& client.connectTimeout("127.0.0.1",tonumber(winform.editPacPort.text) ,0.5) ){
@@ -146,6 +210,52 @@ winform.btnUpdate.oncommand = function(id,event){
 		return client.close(); 
 	} 
 	client.close(); 
+	
+	config.proxy.pacPort  = tonumber(winform.editPacPort.text)
+	if(oldPacPort!=tonumber(winform.editPacPort.text)){ 
+		xray.pacServer.restart();
+	}
+/*
+		debug.log.print("")
+	debug.debug()
+*/
+	//搜索器socks代理端口
+	var client = wsock.tcp.client();  
+	oldPort = xray.core.searcherSocksProxyPort;
+	port = tonumber(winform.editSearcherScoksPort.text) 
+	if( tonumber(port)
+		&& tonumber(port) != oldPort
+		&& client.connectTimeout("127.0.0.1",tonumber(port) ,0.5) ){
+		winform.editSearcherScoksPort.editBox.showErrorTip(,"端口"+tonumber(port)+"已被占用");
+		winform.btnUpdate.disabledText = null;
+		return client.close(); 
+	} 
+	client.close();  
+	
+	
+	config.core.default.inbounds[4]["port"]  = port;
+	if(port!=oldPort){
+		restartCore = true;
+	}		
+	
+	//搜索器http代理端口
+	var client = wsock.tcp.client();  
+	oldPort = xray.core.searcherHttpProxyPort;
+	port = tonumber(winform.editSearcherHttpPort.text) 
+	if( tonumber(port)
+		&& tonumber(port) != oldPort
+		&& client.connectTimeout("127.0.0.1",tonumber(port) ,0.5) ){
+		winform.editSearcherHttpPort.editBox.showErrorTip(,"端口"+tonumber(port)+"已被占用");
+		winform.btnUpdate.disabledText = null;
+		return client.close(); 
+	} 
+	client.close();  
+	
+	
+	config.core.default.inbounds[5]["port"]  = port;
+	if(port!=oldPort){
+		restartCore = true;
+	}	
 	
 	
 	if(winform.chkEnableGitConfigGithub.checked!=config.proxy.enableGitConfigGithub){
@@ -158,21 +268,8 @@ winform.btnUpdate.oncommand = function(id,event){
 		else {
 			xray.github.setProxy(null);	
 		}
-	} 
+	} 	
 	
-	var restartCore = false;
-	var port = tonumber(winform.editSocksPort.text) 
-	config.core.default.inbounds[1]["port"]  = port;
-	if(port!=oldPort){ 
-		restartCore = true;
-	}	
-	
-	var port = tonumber(winform.editHttpPort.text) 
-	config.core.default.inbounds[2]["port"]  = port;
-	if(port!=oldPort){
-		restartCore = true;
-	}		
-
 	var listen = winform.chkLan.checked ? "0.0.0.0" : "127.0.0.1"; 
 	if(listen!=config.core.default.inbounds[1]["listen"]){
 		config.core.default.inbounds[1]["listen"]= listen;
@@ -184,18 +281,34 @@ winform.btnUpdate.oncommand = function(id,event){
 		restartCore = true;
 	}			 
 	
+	if(listen!=config.core.default.inbounds[3]["listen"]){
+		config.core.default.inbounds[3]["listen"]= listen;
+		restartCore = true;
+	}	
+	
+	if(listen!=config.core.default.inbounds[4]["listen"]){
+		config.core.default.inbounds[4]["listen"]= listen;
+		restartCore = true;
+	}			 
+	
+	if(listen!=config.core.default.inbounds[5]["listen"]){
+		config.core.default.inbounds[5]["listen"]= listen;
+		restartCore = true;
+	}	
+		 
+	
+	
+	
 	config.core.save(); 
 	publish("config.inbounds.changed");
 	if(restartCore) {
+		//debug.debug()
 		publish("uiCommand.restartxrayCore");    
 	}
 	
-	config.proxy.pacPort  = tonumber(winform.editPacPort.text)
-	if(oldPacPort!=tonumber(winform.editPacPort.text)){ 
-		xray.pacServer.restart();
-	}
+
 	
-	config.proxy.save();
+	//config.proxy.save();
 	sysProxy.reset(true);
 	
 	import win.reg;
@@ -355,9 +468,9 @@ winform.btnOpenFirewall.oncommand = function(id,event){
 	process.control("firewall.cpl")	
 }
 
-winform.tbTestInterval.oncommand = function(id,event){
-	
-}
+
+
+
 
 winform.show();
 win.loopMessage();

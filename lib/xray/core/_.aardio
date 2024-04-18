@@ -10,7 +10,9 @@ namespace xray.core;
 
 socksProxyPort = null;
 httpProxPort = null;
-
+apiPort = null;
+searcherSocksProxyPort = null;
+searcherHttpProxyPort = null;
 // 获取系统代理配置
 getSystemProxyConfig = function(){
     if(!(socksProxyPort&&httpProxPort)){ return null; }//有设置代理就什么也不做，没有就返回null
@@ -93,6 +95,18 @@ restart = function(editor,outbound){
 
 	socksProxyPort = inbounds[1].port;  
 	httpProxPort = inbounds[2].port;
+	apiPort = inbounds[3].port;
+	searcherSocksProxyPort = inbounds[4].port;
+	searcherHttpProxyPort = inbounds[5].port;
+/*
+	console.dump(socksProxyPort)
+	console.dump(httpProxPort)
+	console.dump(apiPort)
+	console.dump(searcherSocksProxyPort)
+	console.dump(searcherHttpProxyPort)
+*/
+	//debug.log.print(inbounds[4].port)
+	//debug.log.print(inbounds[5].port)
 	// 49152是默认动态端口范围的开始端口，49152-65535
 	// 如果没有设置端口，或者设置端口的是动态端口，那么就使用默认提供的端口（下面多个端口表示依次优先获取）
 	if( (! socksProxyPort) || socksProxyPort >=  49152 ){ socksProxyPort = ..wsock.tcp.server.getFreePort("127.0.0.1",1081,10801,10811,44821)  }
@@ -223,7 +237,7 @@ addOutbound = function(frmXray,editor,outbound,proxyTag,outConfigJsonName){
 		//debug.log.print(configPath);
 		var jsonPath,err = ..xray.core.configJson.writeSearcherOutboundConfig(
 			..io.joinpath(..io.splitpath(corePath).dir,outConfigJsonName)
-			,outbound,1081,1082,proxyTag);
+			,outbound,proxyTag);
 	
 		if(!jsonPath){
 						

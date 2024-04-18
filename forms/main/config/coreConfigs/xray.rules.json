@@ -41,6 +41,39 @@
                 "allowTransparent":false,
                 "udp":false
             }
+        },
+        {
+            "listen":"0.0.0.0",
+            "port":1091,
+            "protocol":"socks",
+            "tag":"proxySearcher",
+            "settings":{
+                "auth":"noauth",
+                "udp":true
+            },
+            "sniffing":{
+                "destOverride":[
+                    "http",
+                    "tls"
+                ],
+                "enabled":true
+            }
+        },
+        {
+            "listen":"0.0.0.0",
+            "port":1092,
+            "protocol":"http",
+            "tag":"http_proxySearcher",
+            "settings":{
+
+            },
+            "sniffing":{
+                "destOverride":[
+                    "http",
+                    "tls"
+                ],
+                "enabled":true
+            }
         }
     ],
     "log": {
@@ -48,20 +81,20 @@
         "error": "",
         "loglevel": "warning"
     },
-    "outbounds": [
+    "outbounds": [        
         {
             "tag": "proxy"
         },
         {
-            "protocol": "dns",
-            "tag": "Dns-Out"
-        },
-        {
             "protocol": "freedom",
             "tag": "Direct",
-            "settings": {
-                "domainStrategy": "UseIPv4"
+            "settings": {                
             }
+        },
+        
+        {
+            "protocol": "dns",
+            "tag": "Dns-Out"
         },
         {
             "protocol": "blackhole",
@@ -148,12 +181,9 @@
             },
             {
                 "type": "field",
-                "outboundTag": "Direct",
-                "ip": [
-                    "geoip:cn",
-                    "geoip:private"
-                ]
-            },            
+                "domain": "geosite:cn",
+                "outboundTag": "direct"
+            },                      
             {
                 "type": "field",
                 "outboundTag": "Direct",
@@ -193,14 +223,7 @@
                 ],
                 "outboundTag":"proxy",
                 "type":"field"
-            },
-            {
-                "type": "field",
-                "outboundTag": "proxy",
-                "domain": [
-                    "geosite:geolocation-!cn"
-                ]
-            },     
+            },    
             {
                 "ip":[
                     "geoip:cn",

@@ -66,7 +66,7 @@ tooltipCtrl.addTool(winform.radioSocksPac,'开启此选项以后：\nChrome 浏�
 
 import xray.pacServer;
 onPacUpdated = function(){
-	winform.editPacPort.text = xray.pacServer.getPort() || config.proxy.pacPort || 1083;
+	winform.editPacPort.text = xray.pacServer.getPort() || config.proxy.pacPort || 10083;
 	
 	var pac = xray.pacServer.getUrl();
 	winform.editPacUrl.text = pac ? string.match(pac,"[^?]+");
@@ -92,11 +92,11 @@ subscribe("sysProxy.modeChanged",function(mode){
 import xray.core;
 var onInboundsUpdated = function(){
 	var inbounds = ..config.core.default[["inbounds"]];
-	winform.editSocksPort.text = xray.core.socksProxyPort || inbounds[[1]][["port"]] || 1081;
-	winform.editHttpPort.text = xray.core.httpProxyPort || inbounds[[2]][["port"]] || 1082;
-	winform.editApiPort.text = xray.core.apiPort || inbounds[[3]][["port"]] || 1083;
-	winform.editSearcherScoksPort.text = xray.core.searcherSocksProxyPort || inbounds[[4]][["port"]] || 1091;
-	winform.editSearcherHttpPort.text = xray.core.searcherHttpProxyPort || inbounds[[5]][["port"]] || 1092;
+	winform.editSocksPort.text = xray.core.socksProxyPort || inbounds[[1]][["port"]] || 10081;
+	winform.editHttpPort.text = xray.core.httpProxyPort || inbounds[[2]][["port"]] || 10082;
+	winform.editApiPort.text = xray.core.apiPort || inbounds[[3]][["port"]] || 10083;
+	winform.editSearcherScoksPort.text = xray.core.searcherSocksProxyPort || inbounds[[4]][["port"]] || 10091;
+	winform.editSearcherHttpPort.text = xray.core.searcherHttpProxyPort || inbounds[[5]][["port"]] || 10092;
 
 	
 	winform.chkLan.checked = inbounds[[1]][["listen"]] !== "127.0.0.1";
@@ -330,7 +330,7 @@ winform.btnUpdate.oncommand = function(id,event){
 	publish("uiCommand.HotkeyChanged");
 	
 	winform.btnUpdate.disabledText = null;
-	winform.msgOk("配置已更新",1200);
+	winform.msgOk("配置已更新",500);
 }
 
 winform.editPacUrl.editBox.readonly = true;

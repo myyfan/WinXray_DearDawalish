@@ -2,7 +2,7 @@
 import wsock.tcp.server;
 import xray.core.ssrJson;
 import process.popen;
-import config;
+//import config;
 
 namespace xray.core.ssr;
 

@@ -44,7 +44,7 @@ frmXray.listview.setExtended(0x10000/*_LVS_EX_DOUBLEBUFFER*/);
 frmXray.show();//显示窗口
 
 //检测服务器是否可代理
-import config;
+//import config;
 import xray.core; 
 var currentOutboundIndex,currentOutboundAddress;//全局记录当前正在代理的服务器
 var isManualSwitch=false;//记录当前是否手动触发导致服务器切换
@@ -52,10 +52,15 @@ var isOnSearching = false;//正在搜索可用服务器标志,用来标志当前
 var waitCount=0;//等待可用列表次数
 var trafficTimerId;//流量定时器
 var testTimerId;//检测定时器
+var autoTestTime ;//记录定时检测的时间间隔
 frmXray.searcherIndex =0 ; //正在搜索的序列号
 frmXray.searchingBackground = false;
 frmXray.isOnActive = false;//正在运行一个检测标志，当为1时等待其结束
-var saveTimerId = frmXray.setInterval( 3600000,..config.proxy.save());
+var saveTimerId = frmXray.setInterval( 600000,function(){//定时保存proxy数据
+		//debug.log.print("proxy save")
+		config.proxy.save()	
+	}
+);
 //debug.log.print(saveTimerId);
 
 
@@ -315,7 +320,7 @@ switchOutbound = function(outboundIndex,outboundAddress){//定时检测标志,�
 	currentOutboundIndex,currentOutboundAddress = outboundIndex,outboundAddress;
 	
 	var started;
-	if(!xray.core.prcsxray || outbound.protocol == "ssr" || outbound.protocol == "naive" ){
+	if(!xray.core.prcsxray || outbound.protocol == "ssr" || outbound.protocol == "naive"  ){
 		started = xray.core.restart(frmXray.edit,outbound);//重启内核
 		//debug.log.print("内核重启")
 		
@@ -338,7 +343,7 @@ switchOutbound = function(outboundIndex,outboundAddress){//定时检测标志,�
 				//cleaner = xray.core.stopSearcher(frmXray.edit,outbound);
 				cleaner = xray.core.deleteOutbound(frmXray.edit,outbound,"proxy","proxyConfig.json");
 				//debug.debug();				
-				//sleep(500);
+				
 			}
 			//debug.log.print("cleaner:"+cleaner)	
 			
@@ -348,7 +353,7 @@ switchOutbound = function(outboundIndex,outboundAddress){//定时检测标志,�
 				//adder = xray.core.startSearcher(frmXray.edit,next);
 				i--;
 				adder = xray.core.addOutbound(frmXray,frmXray.edit,outbound,"proxy","proxyConfig.json");				
-				//sleep(5000);
+				//debug.log.print(adder);
 			}
 			 if(!cleaner || !adder ) {
 			 	started = xray.core.restart(frmXray.edit,outbound);//重启内核
@@ -390,25 +395,26 @@ testOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTesting){
 	
 		
 		..thread.invoke( //新建测试线程
-			function(frmXray,outboundIndex,outboundAddress,sockProxyPort,httpProxyAddress,enableRetry,timerTesting){
+			function(frmXray,outboundIndex,outboundAddress,sockProxyPort,httpProxyAddress,enableRetry,timerTesting,outbounds){
 				import debug.log
 				import console
-				import config
+				//import config
 				
 				import web.rest.client;
 				
 				//debug.log.print("httpProxyAddress为："+sockProxyPort);
 				var lastStatusCode ;
-				for(i=1;3;1){					
+				for(i=1;2;1){					
 					var restClient = web.rest.client(,httpProxyAddress);
-					restClient._http.setTimeouts(2000,9000,9000);
+					restClient._http.setTimeouts(4000,5000,5000);
 					timeTick = time.tick(); 
 					var ret = restClient.get("https://www.google.com/generate_204");
 					timeTick=time.tick() - timeTick; 
 					//console.dump(config.proxy.outbounds[outboundIndex]);
 					//if(!config.proxy.outbounds[outboundIndex].replyDelay ) 	config.proxy.outbounds[outboundIndex].replyDelay = 1000;					
 					try{
-						config.proxy.outbounds[outboundIndex].replyDelay = (config.proxy.outbounds[outboundIndex].replyDelay * 99 + timeTick )/100;
+						//debug.log.print(#config.proxy.outbounds);
+						outbounds[outboundIndex].replyDelay = (outbounds[outboundIndex].replyDelay * 99 + timeTick )/100;
 					//debug.log.print("响应时间为："+timeTick+"毫秒,平均时间为："+config.proxy.outbounds[outboundIndex].replyDelay+"毫秒");
 					}
 					
@@ -417,6 +423,8 @@ testOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTesting){
 					
 					//debug.log.print("序号:"+outboundIndex+" 活动检测器：",lastStatusCode,",timerTesting为：",timerTesting,",地址"+outboundAddress);	
 					restClient.close();
+					
+					
 					if( lastStatusCode || lastStatusCode == 204 ) {
 
 						frmXray.onStartXrayComplete(outboundIndex,outboundAddress,timerTesting); 
@@ -478,7 +486,7 @@ Accept-Charset:utf-8;
 */				
 				frmXray.onStartXrayFailed(outboundIndex,outboundAddress,enableRetry);
 			},
-			frmXray,outboundIndex,outboundAddress,xray.core.socksProxyPort,xray.core.getSystemProxyConfig(),enableRetry,timerTesting
+			frmXray,outboundIndex,outboundAddress,xray.core.socksProxyPort,xray.core.getSystemProxyConfig(),enableRetry,timerTesting,config.proxy.outbounds
 		)
 	
 		return true;	
@@ -649,7 +657,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 	//isOnSearching = true;
 	
 
-	var outbound = ..config.proxy.outbounds[outboundIndex];
+	var outbound = config.proxy.outbounds[outboundIndex];
 	if(!(outbound && (outbound.address == outboundAddress))){
 		return;
 	}
@@ -766,7 +774,7 @@ if(config.proxy.outbounds[next[1]].failedCount) debug.log.print("failedCount为"
 			}
 			
 			//debug.log.printf('索引号:'+next[1]+"地址:"+next[2]+"测试延时:"+next[3]+"毫秒，"+"表大小为："+#frmXray.validOutbounds+"服务器总数为:"+#..config.proxy.outbounds);
-			frmXray.edit.print('正在测试服务器列表号:'+next[1]+"，服务器地址:"+next[2]+"，测试延时:"+next[3]+"毫秒，"+"剩余可测数量为："+#frmXray.validOutbounds+"，服务器总数为:"+#..config.proxy.outbounds);
+			frmXray.edit.print('正在测试服务器列表号:'+next[1]+"，服务器地址:"+next[2]+"，测试延时:"+next[3]+"毫秒，"+"剩余可测数量为："+#frmXray.validOutbounds+"，服务器总数为:"+#config.proxy.outbounds);
 			//frmXray.edit.printf('正在测试服务器列表号:'+next[1]+"，服务器地址:"+next[2]+"，测试延时:"+next[3]+"毫秒，");
 			//frmXray.edit.printf("剩余可测数量为："+#frmXray.validOutbounds+"，服务器总数为:"+#..config.proxy.outbounds);
 					
@@ -1107,7 +1115,7 @@ for( i=2;#validAddresses;1 ){      //找出时延最少的服务器
 					
 				}
 			}
-			debug.log.print(time(next[3]));
+			//debug.log.print(time(next[3]));
 			//debug.log.print(next);
 			var test = frmXray.listview.getItemText(next[1],2)
 			//debug.log.print("test为："+test,"next[2]为："+next[2]+next[3]);
@@ -1206,7 +1214,7 @@ var removeOutbounds = function(selectedItems){
 		}
 	}
 	publish("outbounds.updateConfigJson"); 
-	..config.proxy.save();
+	config.proxy.save();
 //debug.log.print(frmXray.listview.activeOutboundIndex)
 
 //如果之前就没有活动服务器,重新开始测时搜索
@@ -1244,7 +1252,7 @@ frmXray.listview.onnotify = function(id,code,ptr){
 					} 
 				}
 				elseif(lvcd.iSubItem==6){ 
-					if(..config.proxy.outbounds[item].autoConnect===false){ 
+					if(config.proxy.outbounds[item].autoConnect===false){ 
 						lvcd.clrText = 0xCCCCCC;
 					} 
 				}
@@ -1379,7 +1387,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 			if(#selectedItems=1 && subscribeUrl){
 				
 				var ps;
-				var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
+				var cfgSubscribeUrls = config.subscribe.subscribeUrls;
 				for(i=#cfgSubscribeUrls;1;-1){
 					var sub = cfgSubscribeUrls[i]  
 					if(sub.url===subscribeUrl) {
@@ -2092,17 +2100,19 @@ subscribe("uiCommand.restartxrayCore",function(){
 import process;
 
 //读配置
-if(config.proxy.AutoTest){
+if(config.proxy.AutoTest == "true"){
 	frmXray.chkAutoTest.checked = true;
 	//frmXray.chkAutoTest.oncommand();//调用设置异常检测计时器
 }
 frmXray.chkValidNoSearch.checked = config.proxy.chkValidNoSearch;
 
-if(config.proxy.searchMode) {
-	frmXray.chkSearchMode.checked = config.proxy.searchMode;
+if(config.proxy.searchMode == "true") {
+	frmXray.chkSearchMode.checked = true;
 	//frmXray.chkSearchMode.oncommand();
 }
-frmXray.chkJustValid.checked = config.proxy.chkJustValid;
+if(config.proxy.chkJustValid == "true"){
+	frmXray.chkJustValid.checked = true;
+}
 //frmXray.chkAutoTest.oncommand();//设置异常检测计时器
 frmXray.chkAutoTest.skin(style.checkBox);
 
@@ -2234,22 +2244,28 @@ frmXray.AutoTest = function(id,event){
 	//debug.log.print("定时器被调用：",testTimerId);
 	//debug.debug();
 	
-	
+	autoTestTime = config.proxy.testInterval;
 /*
-	if(testTimerId){
+	if(autoTestTime != config.proxy.testInterval && testTimerId ){
 		frmXray.clearInterval(testTimerId);	//删除定时器
+		autoTestTime = config.proxy.testInterval;
 	}
 */
 
 	import inet.http;
 	//设置异常检查定时器,定时检测代理是否正常
 	testTimerId = frmXray.setInterval( 
-			config.proxy.testInterval*1000,function(){
+			autoTestTime*1000,function(){
 				import debug
-				//debug.log.print("timerTesting")
-				//debug.debug();
+
 				if(!(currentOutboundIndex && currentOutboundAddress)) return ; 
-				testOutbound(currentOutboundIndex,currentOutboundAddress,false,true);//定时检测代理状态
+
+				testOutbound(currentOutboundIndex,currentOutboundAddress,frmXray.chkAutoTest.checked,true);//定时检测代理状态
+				
+				if(autoTestTime != config.proxy.testInterval ){
+					frmXray.clearInterval(testTimerId);	//删除定时器				
+					frmXray.AutoTest ();
+				}
 		} 
 	)
 }
@@ -2389,6 +2405,8 @@ setSearcherTimer = function(){
 	if(searcherTimerID) frmXray.clearInterval(searcherTimerID);
 	searcherTimerID = frmXray.setInterval( 
 				5000,function(){
+					//import config;
+					//config.proxy.save();
 					frmXray.chkSearchMode.oncommand();		
 					
 				} 
@@ -2396,7 +2414,7 @@ setSearcherTimer = function(){
 }
 frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 	//debug.log.print(outboundIndex)
-	var outbounds = ..config.proxy.outbounds;
+	var outbounds = config.proxy.outbounds;
 	if(outbounds[outboundIndex].address == outbound.address ){
 		if( success ){//连通，发布“连接成功”消息
 		
@@ -2450,8 +2468,10 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 }
 frmXray.chkSearchMode.oncommand = function(id,event){
 	//import config
-	..config.proxy.searchMode = frmXray.chkSearchMode.checked;
-	..config.proxy.searcherIndex = frmXray.searcherIndex ;
+	config.proxy.searchMode = frmXray.chkSearchMode.checked;
+	config.proxy.searcherIndex = frmXray.searcherIndex ;
+	//config.proxy.save();
+	
 	//isManualSwitch = true;
 	if(frmXray.chkSearchMode.checked) {	//勾选才后台搜索，否则设定定时器间隔运行
 		if(frmXray.searchingBackground ) {
@@ -2459,9 +2479,9 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 			return ;
 		}
 		if(!xray.core.prcsxray ) {
-			//debug.log.print("frmXray.listview.activeOutboundIndex is null.")
+			debug.log.print("xray.core.prcsxray is null.")
 			
-			setSearcherTimer();
+			//setSearcherTimer();
 			return ;
 		}
 		if(searcherTimerID) frmXray.clearInterval(searcherTimerID);
@@ -2471,7 +2491,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 		if(frmXray.searcherIndex > #outbounds) frmXray.searcherIndex = 1;
 		var next = outbounds[frmXray.searcherIndex]; 
 		//debug.debug();
-		if(next.protocol == "ssr" || next.protocol == "naive" ){
+		if(next.protocol == "ssr" || next.protocol == "naive"){
 			//switchOutbound(frmXray.searcherIndex,next.address);
 			frmXray.searcherIndex ++;
 			frmXray.searchingBackground = false;
@@ -2562,7 +2582,7 @@ if(outbound.protocol == "ssr" || outbound.protocol == "naive" ){
 				}
 */
 				//debug.log.print("httpProxyAddress为："+httpProxyAddress);
-				for(i=1;2;1){		
+				for(i=1;1;1){		
 /*
 					debug.log.print(searcherHttpProxyPort)	
 							
@@ -2572,7 +2592,7 @@ if(outbound.protocol == "ssr" || outbound.protocol == "naive" ){
 					var restClient = web.rest.client(,"127.0.0.1:"+searcherHttpProxyPort);
 					
 					//console.print("127.0.0.1:"+..xray.core.searcherHttpProxyPort)
-					restClient._http.setTimeouts(2000,9000,9000);
+					restClient._http.setTimeouts(4000,5000,5000);
 					//timeTick = time.tick(); 
 					var ret = restClient.get("https://www.google.com/generate_204");
 				
@@ -2717,6 +2737,7 @@ frmXray.trafficStats = function(){
 	
 	trafficTimerId = frmXray.setInterval( 
 		function(){
+
 			import debug
 			import debug.log
 			//debug.log.print("流量状态定时器触发")
@@ -2725,10 +2746,9 @@ frmXray.trafficStats = function(){
 			if( !currentOutboundIndex ){ return apiTime }
 			
 			import TrafficStats;
+
 			downValue,upValue = TrafficStats.start();
 
-			
-			
 			if(downValue){
 				var downTraffic = config.proxy.outbounds[currentOutboundIndex].trafficDown;
 				if( downTraffic ){ downTraffic += downValue}

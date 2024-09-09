@@ -2,7 +2,7 @@
 import fsys;
 import wsock.tcp.server;
 import process.popen;
-import config;
+//import config;
 
 namespace xray.core.naive;
 

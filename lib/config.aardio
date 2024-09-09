@@ -1,13 +1,23 @@
 ﻿
 //config 配置文件 
 import fsys.config;
+import debug
+import debug.log
+
+//debug.log.print("config 启动")
+//debug.debug();
+
 config  = fsys.config("/config/"); 
 
 
 if(!config.proxy.mode) config.proxy.mode = "pac";
 if(!config.proxy.pacPort) config.proxy.pacPort = 0;
+//debug.log.print("debug.log.print")
 if(config.proxy.useHttpGlobal === null){
 	config.proxy.useHttpGlobal = true;
+	
+	//debug.log.print("config.proxy.useHttpGlobal === null")
+	//debug.debug()
 }
 if(config.proxy.useSocksPac === null){
 	config.proxy.useSocksPac = _WIN10_LATER;
@@ -57,7 +67,7 @@ config.__resetDefaultCore = function(){
     "inbounds":{
         {
             "listen":"0.0.0.0",
-            "port":1081,
+            "port":10081,
             "protocol":"socks",
             "tag":"proxy",
             "settings":{
@@ -74,7 +84,7 @@ config.__resetDefaultCore = function(){
         },
         {
             "listen":"0.0.0.0",
-            "port":1082,
+            "port":10082,
             "protocol":"http",
             "tag":"http_proxy",
             "settings":{
@@ -90,7 +100,7 @@ config.__resetDefaultCore = function(){
         },
         {
             "listen":"127.0.0.1",
-            "port":1084,
+            "port":10084,
             "protocol":"dokodemo-door",
             "tag":"api",
             "settings":{
@@ -101,7 +111,7 @@ config.__resetDefaultCore = function(){
         },
         {
             "listen":"0.0.0.0",
-            "port":1091,
+            "port":10091,
             "protocol":"socks",
             "tag":"proxySearcher",
             "settings":{
@@ -118,7 +128,7 @@ config.__resetDefaultCore = function(){
         },
         {
             "listen":"0.0.0.0",
-            "port":1092,
+            "port":10092,
             "protocol":"http",
             "tag":"http_proxySearcher",
             "settings":{

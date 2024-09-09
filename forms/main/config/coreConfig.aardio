@@ -96,7 +96,7 @@ subscribe("uiCommand.updateCore", function(){
 
 	win.delay(500);
 	//winform.btnUpdate.disabledText = null;
-	winform.msgOk("配置已更新",1200);
+	winform.msgOk("配置已更新",500);
 })
 
 

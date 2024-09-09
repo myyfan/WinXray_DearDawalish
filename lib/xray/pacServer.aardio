@@ -70,7 +70,7 @@ restart = function(){
 	}
 
 	var pacPort = ..config.proxy.pacPort;
-	if( (! pacPort) || pacPort >= 49152 ){ pacPort = ..wsock.tcp.server.getFreePort("127.0.0.1",1083,10803,10813,44823) }
+	if( (! pacPort) || pacPort >= 49152 ){ pacPort = ..wsock.tcp.server.getFreePort("127.0.0.1",10083,10803,10813,44823) }
 
 	var currentIp,currentPort = $serverMain.getLocalIp(); 
 	if(currentIp!==..config.core.default.inbounds[[1]][["listen"]] 

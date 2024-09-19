@@ -59,7 +59,7 @@ tbs.onSelchange = function(idx,strip,form){
 		winform.btnUpdate.hide=true;
 	}
 }
-tbs.selIndex = 2;
+tbs.selIndex = 4;
 
 
 import style;

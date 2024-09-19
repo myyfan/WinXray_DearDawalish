@@ -2207,8 +2207,14 @@ import xray.outbounds;
 frmXray.btnImportServerFromClipBd.skin(style.plainButton)
 frmXray.btnImportServerFromClipBd.oncommand = function(id,event){
 	var str = ..win.clip.read();
+	
+			//debug.log.print(str)
+	
 	if(str){  
 		str = ..string.trim(str,'"\'\t\r\n '); 
+		
+				//debug.log.print(str)
+		
 		if( ..string.startWith(str,"http://") 		//如果是链接，调用更新订阅程序，然后返回
 			|| ..string.startWith(str,"https://") 
 			|| ..string.match(str,"^\s*/\N+\s*$") ){
@@ -2216,11 +2222,13 @@ frmXray.btnImportServerFromClipBd.oncommand = function(id,event){
 				str = "https://github.com" + str;
 			}
 			
+					//debug.log.print(str)
+			
 			xray.outbounds.updateSubscription({[str]=true});
 			return;
 		}
 
-		var outbounds = xray.outbounds.importFromString(str);		//不是链接则解析剪切板服务器数据
+		var outbounds = xray.outbounds.importFromString(str);		//不是链接调用importFromString函数导入数据
 		if(#outbounds){
 			..table.append(config.proxy.outbounds,outbounds);
 			// 防止首次粘贴时，下载core失败导致没有保存节点的情况，所以手动save一下

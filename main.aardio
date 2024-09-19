@@ -1,6 +1,8 @@
 
 import  debug
 import  debug.log
+import console
+
 import config
 var dbg = debug.hook();
 //debug.log.setPath("/config/dbg$.log");
@@ -195,7 +197,7 @@ titleBar={cls="bkplus";left=0;top=0;right=1022;bottom=38;bgcolor=8036607;dl=1;dr
 
 // 如果已经启动了程序，那么显示已启动的程序界面，为了不重复启动，退出本程序
 import win.ui.atom;
-var atom,hwnd = mainForm.atom("DFA5667E-1D8C-49C0-8918-C6FEC2DECCF8");
+var atom,hwnd = mainForm.atom("DFA5667E-1D8C-49C0-8918-C6FEC2DECCF9");
 if(!atom){
 	win.showForeground(hwnd);
 	win.quitMessage();	

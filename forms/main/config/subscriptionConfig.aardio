@@ -236,6 +236,7 @@ var accelerator = win.ui.accelerator({
     };  
 },winform);
 winform.btnUpdate.skin(style.primaryButton);
+//更新订阅按钮
 winform.btnUpdate.oncommand = function(id,event){
 
 	winform.btnUpdate.disabledText = {'\uF254';'\uF251';'\uF252';'\uF253';'\uF250'}
@@ -251,11 +252,12 @@ winform.btnUpdate.oncommand = function(id,event){
 	for(i=#cfgSubscribeUrls;1;-1){
 		var sub = cfgSubscribeUrls[i];
 		// sub.checked等于启用时，outbondSubscribeUrlMap[sub.url]为true
-		outbondSubscribeUrlMap[sub.url] = sub.checked=="启用";
+		if(sub.checked=="启用") outbondSubscribeUrlMap[sub.url] = true;
 	} 
 		
+	//console.dump(outbondSubscribeUrlMap);
 	
-	if(!xray.outbounds.updateSubscription()){
+	if(!xray.outbounds.updateSubscription(outbondSubscribeUrlMap)){
 		//winform.btnUpdate.disabledText = null;
 		
 		publish("uiCommand.restartxrayCore",outbounds) 
@@ -263,7 +265,7 @@ winform.btnUpdate.oncommand = function(id,event){
 	
 	winform.btnUpdate.disabledText = null;
 }
-
+//启用所有复选框
 winform.chkAll.oncommand = function(id,event){
 	isOnCheckAll = 1;
 	var checked = winform.chkAll.checked
@@ -278,6 +280,7 @@ winform.chkAll.oncommand = function(id,event){
 }
 
 winform.btnRemove.skin(style.plainButton)
+//删除订阅按钮
 winform.btnRemove.oncommand = function(id,event){
 	
 	var outboundRemoved = 0;
@@ -318,7 +321,7 @@ winform.btnRemove.oncommand = function(id,event){
 	winform.btnUpdate.disabledText = null;
 
 }
-
+//添加订阅按钮
 winform.btnAdd.oncommand = function(id,event){
 	import debug.log
 	import console
@@ -387,7 +390,7 @@ winform.btnAdd.oncommand = function(id,event){
 	
 	
 }
-
+//列表消息响应函数
 winform.listview.onnotify = function(id,code,ptr){  
 	if( code == 0xFFFFFF9B/*_LVN_ITEMCHANGED*/ ){ 
 		var nmListView = winform.listview.getNotifyMessage(code,ptr);

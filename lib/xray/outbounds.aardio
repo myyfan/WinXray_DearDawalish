@@ -4,9 +4,11 @@ import inet.url;
 import win.clip;
 import crypt;
 import crypt.bin;
+import console
+import debug
 
 namespace xray.outbounds;
-
+//分享链接
 exportSharedLinks = function(outbounds){
 	var outString = {};
 	for i,outbound in ..table.eachIndex(outbounds){
@@ -24,7 +26,7 @@ exportSharedLinks = function(outbounds){
 				tls = outbound.tls;
 				ps = outbound.ps;
 			}
-			
+
 			if(outbound.network=="quic"){
 				info.host = outbound.quicSecutity;
 				info.path = outbound.key;
@@ -35,7 +37,7 @@ exportSharedLinks = function(outbounds){
 			elseif(outbound.network=="grpc"){
 				info.path = outbound.grpcSni;
 			}
-			
+
 			var json = ..web.json.stringify(info);
 			var vmess = "vmess://" + ..crypt.encodeBin(json);
 			..table.push(outString,vmess);
@@ -67,7 +69,7 @@ exportSharedLinks = function(outbounds){
 			var ssrUrl =  outbound.address + ":" + outbound.port 
 				+ ":" + (outbound.network:"origin")+ ":" + (outbound.security:"")+ ":" + (outbound.obfs:"plain") 
 				+ ":" + ..crypt.bin.encodeUrlBase64(outbound.id:"");
-				
+
 			var info = {};
 
 			if(#outbound.ps)info.remarks = ..crypt.bin.encodeUrlBase64(outbound.ps);
@@ -77,28 +79,28 @@ exportSharedLinks = function(outbounds){
 			if(#outbound.path)info.ot_path = ..crypt.bin.encodeUrlBase64(outbound.path);
 			if(#outbound.sni)info.ot_domain = ..crypt.bin.encodeUrlBase64(outbound.sni);
 			if(outbound.tls=="tls"){ info.ot_enable = "1"; }
-			 
+
 			if(..table.count(info)){
 				ssrUrl = ssrUrl +"/?"+ ..inet.url.stringifyParameters(info) 
 			}
-					
+
 			..table.push(outString,outbound.protocol + "://" + ..crypt.encodeBin(ssrUrl) );
 		}  
 		elseif(outbound.protocol == "trojan"  || outbound.protocol == "trojan-go"){
 			var trojan;
 			if(outbound.id) trojan = outbound.protocol + "://" + ..inet.url.encode(outbound.id) + "@" + outbound.address + ":" + outbound.port;
 			else trojan = outbound.protocol + "://" + outbound.address + ":" + outbound.port;
-				
+
 			var info = {};
 			if(outbound.network!="tcp") info.type = outbound.network;
 			if(outbound.sni){ info.sni = outbound.sni;}
 			info.host = outbound.host;
 			info.path = outbound.path;
-			
+
 			if(..table.count(info)){
 				trojan = ..inet.url.appendExtraInfo(trojan,info) 
 			}
-					
+
 			if(outbound.ps){
 				trojan = trojan + "#" + ..inet.url.encode(outbound.ps);
 			} 
@@ -108,7 +110,7 @@ exportSharedLinks = function(outbounds){
 			var vless;
 			if(outbound.id) vless = "vless://" + ..inet.url.encode(outbound.id) + "@" + outbound.address + ":" + outbound.port;
 			else vless = "vless://" + outbound.address + ":" + outbound.port;
-			
+
 			var info = {};
 			if(outbound.network!="tcp") info.type = outbound.network ;
 			if(outbound.security!="none") info.encryption = outbound.security; 
@@ -123,11 +125,11 @@ exportSharedLinks = function(outbounds){
 			info.seed = info.seed; 
 			info.key = info.key; 
 			info.headerType = info.type;
-			
+
 			if(..table.count(info)){
 				vless = ..inet.url.appendExtraInfo(vless,info) 
 			}
-					
+
 			if(outbound.ps){
 				vless = vless + "#" + ..inet.url.encode(outbound.ps);
 			} 
@@ -140,13 +142,13 @@ exportSharedLinks = function(outbounds){
 				scheme = "naive+"+outbound.network;
 				location = outbound.ps;
 			}
-			
+
 			if(outbound.headers){
 				urlInfo.extraInfo ={
 					["extra-headers"] = outbound.headers
 				}
 			}
-			
+
 			if(outbound.id){
 				var u,p = ..string.match(outbound.id,"([^\:]+)\:([^\:]+)")
 				if(u && p){
@@ -157,7 +159,7 @@ exportSharedLinks = function(outbounds){
 					urlInfo.user = outbound.id;
 				} 
 			} 
-  
+
 			..table.push(outString,..inet.url.stringify(urlInfo));
 		} 
 		elseif((outbound.protocol == "https") || (outbound.protocol == "http")){
@@ -167,7 +169,7 @@ exportSharedLinks = function(outbounds){
 				scheme = outbound.protocol;//"proxy"
 				location = outbound.ps;
 			}
-			
+
 			if(outbound.protocol == "http"){
 				/*urlInfo.extraInfo ={
 					["tls"] = "none"
@@ -178,7 +180,7 @@ exportSharedLinks = function(outbounds){
 					["allowInsecure"] = 1
 				}
 			}
-			
+
 			if(outbound.id){
 				var u,p = ..string.match(outbound.id,"([^\:]+)\:([^\:]+)")
 				if(u && p){
@@ -189,104 +191,37 @@ exportSharedLinks = function(outbounds){
 					urlInfo.user = outbound.id;
 				} 
 			} 
-  
+
 			..table.push(outString,..inet.url.stringify(urlInfo));
 		} 
 	}	
-	
+
 	return ..string.join(outString,'\r\n');
 }
-
+//设置元表，弱引用键、值，弱引用不会增加引用计数、不会阻止垃圾回收器删除对象
 var _subscriptionResponseCache = {
 	@{_weak="kv"}
 }
-importFromString = function(str,subscribeUrl){ 
+
+//导入节点
+importFromString = function(str,subscribeUrl,subps){
+	import debug
+	import debug.log
+	import console
+	//debug.debug();
+
 	if(!str){ return; }
-	str = ..string.trim(str);
-		
-	var jsonData;
-	if(..string.match(str,"%\[\]") || (
-		..string.match(str,"%\{\}") && !..string.match(str,"%\{\}.+%\{\}")
-		) ){
-
-		if(subscribeUrl){
-			var crc32 = ..string.crc32(str);
-			_subscriptionResponseCache[subscribeUrl] = crc32;
-		}
-		jsonData = ..web.json.tryParse(str);
-	}
-	
-	if( ..table.isArray(jsonData) ){  
-		for(i=#jsonData;1;-1){
-			if( !validOutbound(jsonData[i]) ) {
-				..table.remove(jsonData,i);
-			} 
-
-			if(subscribeUrl)jsonData[i].subscribeUrl = subscribeUrl;
-		}
-		
-		return jsonData;
-	}
-	elseif( type(jsonData) == type.table ){ 
-		if( jsonData[["servers"]] ){
-
-			var servers = jsonData[["servers"]] 
-			var outbounds = ..table.array();
-			for i,v in ..table.eachIndex(servers){
-				var outbound = ..table.assign(,v);
-				if(outbound.protocol === null){
-					outbound.protocol = (outbound.server_port&&outbound.password) ? "shadowsocks":"vless"
-				}
-				
-				if(outbound.remarks){
-					outbound.ps = outbound.remarks;
-					outbound.remarks = null;
-				}
-				
-				if(outbound.server){
-					outbound.address = outbound.server;
-					outbound.server = null;
-				}
-				
-				if(outbound.server_port){
-					outbound.port = outbound.server_port;
-					outbound.server_port = null;
-				}
-				
-				if(outbound.password){
-					if(outbound.id){
-						outbound.serverId = outbound.id;
-					}
-					outbound.id = outbound.password;
-					outbound.password = null;
-				}
-				
-				if(outbound.method){
-					outbound.security = outbound.method;
-					outbound.method = null;
-				}
-				
-				if(subscribeUrl)outbound.subscribeUrl = subscribeUrl;
-				..table.push(outbounds,outbound);
-			}
-			
-			return outbounds;
-		}
-		else {
-			if( validOutbound(jsonData) ) {
-				if(subscribeUrl)jsonData.subscribeUrl = subscribeUrl;
-				return {jsonData};
-			}
-		} 
-	}
-	
+	str = ..string.trim(str);//从字符串首尾清除所有空白字符
+//如果是网址的话
 	if( ..string.startWith(str,"http://") 
 		|| ..string.startWith(str,"https://") 
 		|| ..string.match(str,"^\s*/\N+\s*$")  ){
 		
+		debug.log.print(str)
+		
 		import win.dlg.message;
 		var msgDlg = win.dlg.message(..mainForm); 
-		
+
 		var title = '正在获取订阅源 ... ';
 		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
 		for(i=#cfgSubscribeUrls;1;-1){
@@ -296,11 +231,14 @@ importFromString = function(str,subscribeUrl){
 				//..config.proxy.save(); 
 			}
 		} 
-	
+
 		var form = msgDlg.create(title,,true)
 		form.progress.startProgress(50); 
-		
+
 		subscribeUrl = str;
+		
+		//debug.debug();
+		//debug.log.print(str);
 		
 		if(..string.match(subscribeUrl,"^\s*/\N+\s*$") ){
 			if(!..string.find(subscribeUrl,"/<blob>|<raw>")){
@@ -310,28 +248,35 @@ importFromString = function(str,subscribeUrl){
 				subscribeUrl = ..inet.url.append("https://github.com",subscribeUrl);
 			}
 		}
-		
+
 		str = ..win.invoke(
 			function(subscribeUrl){
 				import inet.http; 
 				import web.rest.github;
+				import debug
+
 				if( string.indexOf(subscribeUrl,"github.com")
 					|| string.indexOf(subscribeUrl,"raw.githubusercontent.com") 
 					){
-					
-					var ret  = web.rest.github.getContent(subscribeUrl)
-					if(ret) return ret;
-				}
 
+					var ret  = web.rest.github.getContent(subscribeUrl)
+					
+					//debug.debug(); 
+					
+					if(ret) return ret; 
+				}
+				//var test = inet.http().get(subscribeUrl);
+								 
+				//debug.debug();
+			
 				return inet.http().get(subscribeUrl);
-			},subscribeUrl 
-		)
-	
+			},subscribeUrl 	)
+
 		form.close();
 		if(!str){
 			return;
 		}
-		
+
 		var existIndex;
 		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls : ..table.array();
 		for(i=#cfgSubscribeUrls;1;-1){
@@ -342,6 +287,9 @@ importFromString = function(str,subscribeUrl){
 				break;
 			}
 		} 
+		
+		//debug.debug();
+		 
 		if(!existIndex){
 			var tUrl = ..inet.url.split(subscribeUrl); 
 			..table.push(cfgSubscribeUrls,{url=subscribeUrl;ps=tUrl ? tUrl.host : "";checked="启用"})
@@ -351,42 +299,249 @@ importFromString = function(str,subscribeUrl){
 			..publish("uiCommand.subscriptionNew",cfgSubscribeUrls[existIndex],existIndex);
 		}
 		..config.subscribe.subscribeUrls = cfgSubscribeUrls;
-		..config.proxy.save();
-		
-		var jsonData;
-		if(..string.match(str,"%\[\]") || ..string.match(str,"%\{\}")){
-			jsonData = ..web.json.tryParse(str);
-		}
-		
-		if( type(jsonData) === type.table ){   
-			return importFromString(str,subscribeUrl);
-		}
+		..config.subscribe.save();
 	}
-	
+
 	if(subscribeUrl){
 		var crc32 = ..string.crc32(str);
 		_subscriptionResponseCache[subscribeUrl] = crc32;
+	}	
+	
+	//debug.debug() 
+	
+//Base64格式数据解码
+	if(..string.match(str,"^\s*[\w=+/-_]+\s*$")){//所有的内容只包含 空白字符、字母和数字、以及下划线和=+/-_的话
+				
+		//debug.debug();
+				
+		str = ..crypt.decodeBin(str);//Base64或hex解码
+
+		if(!str) return;
+	}		
+//从yaml格式导入proxy-providers订阅
+	if(..string.match(str,"[\r\n]*proxy-providers\s*\:")){
+		
+		//debug.debug();
+		
+		var urlmap = importFromClash(str,false);
+		if(#urlmap){
+			..mainForm.msgOk('发现了 '+#urlmap+' 个订阅\n正在导入中',1000);
+			var outbounds = ..table.array();
+			for(i=1;#urlmap;1){
+				var impOutbounds = importFromString(urlmap[i]);
+				if(impOutbounds){
+					..table.append(outbounds,impOutbounds);
+				}
+			}
+			return outbounds; 
+		}
+	}
+	
+/*
+			if (str){		
+			debug.log.print(str)
+			debug.debug();
+		}
+*/
+		
+	
+//从yaml格式导入clash节点
+	if(..string.match(str,"[\r\n]*proxies\s*\:")){
+				
+		//debug.debug();
+		
+		var strTemp = importFromClash(str,true);
+    	if(strTemp){
+    		str = strTemp
+    	}
+    }
+    
+    
+    //debug.debug()
+    
+//解析json格式
+	var jsonData;
+	var test;
+	if( (..string.match(str,"%\[\]") && !..string.match(str,"%\{\}.+%\{\}")) || 
+		(..string.match(str,"%\{\}") && !..string.match(str,"%\{\}.+%\{\}") && !..string.match(str,"-\s*%\{\}")) ){
+/*
+	if(..string.match(str,"%\[\]") || //匹配到[]的内容
+		..string.match(str,"%\{\}") //匹配到{}的内容
+		 ){
+*/
+					
+		//debug.debug();
+		
+		//test = ..string.match(str,"%\[\]");
+		//test = ..string.match(str,"%\{\}")
+
+	//如果传参有subscribeUrl
+		if(subscribeUrl){
+			var crc32 = ..string.crc32(str);
+			_subscriptionResponseCache[subscribeUrl] = crc32;
+		}
+		jsonData = ..web.json.tryParse(str);
+		
+	}
+//检查传入参数是否是一个数组(表)
+	if( ..table.isArray(jsonData) ){  //是一个数组的话就逐个解析
+			
+		//debug.debug();
+		
+		for(i=#jsonData;1;-1){
+			if( !validOutbound(jsonData[i]) ) {//如果没有解析到节点信息就删除
+				..table.remove(jsonData,i);
+			} 
+
+			if(subscribeUrl)jsonData[i].subscribeUrl = subscribeUrl;
+				if(subps && type(subps)==type.string) jsonData[i].subps = subps;
+				else jsonData[i].subps = "无订阅";
+		}
+
+		return jsonData;
+	}
+	elseif( type(jsonData) == type.table ){ //是表的话直接解析
+			
+		//debug.debug();
+		
+		if( jsonData[["servers"]] ){//从ss-rust的配置文件添加节点
+
+			var servers = jsonData[["servers"]];
+			var outbounds = ..table.array();
+			for i,v in ..table.eachIndex(servers){
+				var outbound = ..table.assign(,v);
+				if(outbound.protocol === null){
+					outbound.protocol = (outbound.server_port&&outbound.password) ? "shadowsocks":"vless"
+				}
+
+				if(outbound.remarks){
+					outbound.ps = outbound.remarks;
+					outbound.remarks = null;
+				}
+
+				if(outbound.server){
+					outbound.address = outbound.server;
+					outbound.server = null;
+				}
+
+				if(outbound.server_port){
+					outbound.port = outbound.server_port;
+					outbound.server_port = null;
+				}
+
+				if(outbound.password){
+					if(outbound.id){
+						outbound.serverId = outbound.id;
+					}
+					outbound.id = outbound.password;
+					outbound.password = null;
+				}
+
+				if(outbound.method){
+					outbound.security = outbound.method;
+					outbound.method = null;
+				}
+
+				if(subscribeUrl)outbound.subscribeUrl = subscribeUrl;
+					if(subps && type(subps)==type.string) outbound.subps = subps;
+					else outbound.subps = "无订阅";
+				..table.push(outbounds,outbound);
+			}
+
+			return outbounds;
+		}
+		else {
+			if( validOutbound(jsonData) ) {
+				if(subscribeUrl)jsonData.subscribeUrl = subscribeUrl;
+					if(subps && type(subps)==type.string) jsonData.subps = subps;
+					else jsonData.subps = "无订阅";
+				return {jsonData};
+			}
+		} 
 	}
 
-	if(..string.match(str,"^\s*[\w=+/-_]+\s*$")){
-		str = ..crypt.decodeBin(str);
-		if(!str) return;
-	}	
-    
+
+
+//从分享链接导入节点
 	var outbounds = ..table.array();
+	//按行拆分字符串并逐个解析
+	
+	//分析有效行是否成功解析
+	//debug.debug()
+/*
+	var counttest = #outbounds	: 0
+	var ddf = ..string.splitEx(str,);
+	var fd = #ddf
+	var i = 0;
+	var j = 0; 
+	debug.log.print(str)
+*/
+	
 	for(line in ..string.lines(str) ){
+		//console.dump(line)
+				//debug.log.print()
+		//debug.debug();
+		
+/*
+		if(i==j ){ 
+			if(counttest != #outbounds) debug.log.print("i=",i,ddf[i])
+			else {
+				counttest = #outbounds
+			}
+			
+		}
+		else {
+			j= i;
+		}		
+		i++;
+*/
+		
+		
 		if(#outbounds>=10000){
 			import win.dlg.message;
 			var msgDlg = win.dlg.message(..mainForm); 
 			var form = msgDlg.warn("导入的节点数目过多，已导入10000个节点并中止操作！")
-		
+
 			return outbounds;
 		}
-		
-		if(line[1]=='/'# && line[2]=='/'#){
+
+		if(line[1]=='/'# && line[2]=='/'#){//跳过注释行
 			continue;
 		}
 		
+		//j++;
+		
+		//Kitsunebi格式vmess链接(来自于v2rayN源码)
+		var vmessKitsunebi,info = ..string.match(line,`vmess\:\/\/([\w=+/-_]+)?(\S*)`);
+		if(vmessKitsunebi){
+			var data = ..crypt.decodeBin(vmessKitsunebi);
+			var data = ..string.split(data,'@');
+			if(#data == 2){
+				var data1 = ..string.split(data[1],':');
+				var data2 = ..string.split(data[2],':');
+				if(#data1 == 2 && #data2 == 2){
+					var outbound={
+						protocol = "vmess";
+						address = data2[1];
+						port = tonumber(data2[2]);
+						security = data1[1];
+						id = data1[2];
+						network = "tcp";
+					};
+					if(info){
+						info = ..string.split(info,'&');
+						remarks = ..string.match(info[1],"remarks=(\S*)");
+						outbound.ps = ..inet.url.decode(remarks);
+						alterId = ..string.match(info[2],"alterId=(\d*)");
+						outbound.alterId = tonumber(alterId);
+					}
+
+					outbound.type = "none";
+					outbound.subscribeUrl = subscribeUrl;
+					return outbound; 
+				}
+			}
+		}
 		var vmess2 = ..string.match(line,`vmess\:\/\/[^\@\s]+\@[^\?\#\s\:]+<\:\d+>*\S*`);
 		if( vmess2 ) {
 			var vmessUrl = ..inet.url.split(vmess2) 
@@ -399,7 +554,7 @@ importFromString = function(str,subscribeUrl){
 					protocol = "vmess";
 					tls = "tls";
 				};
-				
+
 				if(vmessUrl.extraInfo){
 					var info = ..inet.url.splitParameters(vmessUrl.extraInfo);
 					outbound.sni = info.sni;
@@ -408,10 +563,10 @@ importFromString = function(str,subscribeUrl){
 					outbound.security = info.encryption;
 					outbound.seed = info.seed; 
 					outbound.key = info.key; 
-					
+
 					outbound.network = info.type;
 					outbound.type = info.headerType; //kcp || quic
-					
+
 					if(info.security) outbound.tls = info.security;
 					if(info.flow) outbound.flow = info.flow;
 					if(info.allowInsecure!==null) {
@@ -420,18 +575,18 @@ importFromString = function(str,subscribeUrl){
 					if(info.disableSessionResumption) outbound.disableSessionResumption = info.disableSessionResumption;
 					if(info.alpn) outbound.alpn = info.alpn;	 
 				}
-				
+
 				if(vmessUrl.location){
 					outbound.ps = ..inet.url.decode(vmessUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-
+		//v2rayN格式vmess链接
 		var vmess = ..string.match(line,`vmess\:\/\/([\w=+/-_]+)`);
 		if( vmess ) { 
 			var json = ..crypt.decodeBin(vmess);	
@@ -440,6 +595,7 @@ importFromString = function(str,subscribeUrl){
 				..table.clear(outbound@._defined);
 				outbound.protocol = "vmess";
 				outbound.address = outbound.add;
+			outbound.port = tonumber(outbound.port);
 				outbound.alterId = tonumber(outbound.aid);
 				outbound.security = "auto";
 				outbound.network = outbound.net : "tcp";
@@ -448,7 +604,7 @@ importFromString = function(str,subscribeUrl){
 				outbound.aid = null;
 				outbound.v = null;
 				outbound.subscribeUrl = subscribeUrl;
-				
+
 				if(outbound.ps){
 					var u,h,p = ..string.match(outbound.ps,"(.+)\@(.+)\:(\d+)")
 					if(u&&h&&p){
@@ -462,10 +618,10 @@ importFromString = function(str,subscribeUrl){
 				}
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-		
+		//官方格式vless链接
 		var vless = ..string.match(line,`vless\:\/\/\S+`);
 		if( vless ) {
 			var vlessUrl = ..inet.url.split(vless) 
@@ -478,7 +634,7 @@ importFromString = function(str,subscribeUrl){
 					protocol = "vless";
 					tls = "tls";
 				};
-				
+
 				if(vlessUrl.extraInfo){
 					var info = ..inet.url.splitParameters(vlessUrl.extraInfo);
 					outbound.sni = info.sni;
@@ -487,10 +643,10 @@ importFromString = function(str,subscribeUrl){
 					outbound.security = info.encryption;
 					outbound.seed = info.seed; 
 					outbound.key = info.key; 
-					
+
 					outbound.network = info.type;
 					outbound.type = info.headerType; //kcp || quic
-					
+
 					if(info.security) outbound.tls = info.security;
 					if(info.flow) outbound.flow = info.flow;
 					if(info.allowInsecure!==null) {
@@ -499,25 +655,26 @@ importFromString = function(str,subscribeUrl){
 					if(info.disableSessionResumption) outbound.disableSessionResumption = info.disableSessionResumption;
 					if(info.alpn) outbound.alpn = info.alpn;	 
 				}
-				
+
 				if(vlessUrl.location){
 					outbound.ps = ..inet.url.decode(vlessUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
 
+		//ss链接
 		var ss,comment = ..string.match(line,`ss\:\/\/([^\s\#]+)(<#\S+>?)`);
 		if( ss ) { 
 			var userinfo,address,port = ..string.match(ss,"^([^:]+)\@(.+)\:(\d+)")	
 			if(!(userinfo&&address&&port)){
 				var str = ..crypt.bin.decodeUrlBase64(ss); 
 				if(str){ ss = str; } 
-				
+
 				method,password,address,port = ..string.match(ss,"^(.+)\:(.+)\@(.+)\:(\d+)")
 			}
 			else {
@@ -526,7 +683,7 @@ importFromString = function(str,subscribeUrl){
 					method,password = ..string.match(userinfo,"^(.+)\:(.+)$")
 				}	
 			}
-	
+
 			if(address && password && port){
 				var outbound = {
 					address = address;
@@ -536,7 +693,7 @@ importFromString = function(str,subscribeUrl){
 					network = "tcp";
 					protocol = "shadowsocks"
 				};
-				
+
 				if(comment){
 					comment = ..string.right(comment,-2);
 					comment = ..inet.url.decode(comment);
@@ -550,17 +707,17 @@ importFromString = function(str,subscribeUrl){
 
 						comment = h;
 					}
-					
+
 					outbound.ps = comment;
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-
+		//trojan链接
 		var trojan = ..string.match(line,`trojan\:\/\/\S+`);
 		if( trojan ) {
 			var trojanUrl = ..inet.url.split(trojan) 
@@ -572,35 +729,35 @@ importFromString = function(str,subscribeUrl){
 					network = "tcp";
 					protocol = "trojan"
 				};
-				
+
 				if(trojanUrl.extraInfo){
 					var info = ..inet.url.splitParameters(trojanUrl.extraInfo);
 					outbound.sni = info.sni || info.peer;
-					
+
 					outbound.host = info.host;
 					outbound.path = info.path;
-					
+
 					if(info.type && info.type!=="original"){
 						outbound.network = info.type;
 						if(outbound.network=="h2"){
 							outbound.network="http"
 						}
 					}
-					
+
 					outbound.security = info.encryption;
 				}
-				
+
 				if(trojanUrl.location){
 					outbound.ps = ..inet.url.decode(trojanUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-
+		//trojan-go链接
 		var trojan = ..string.match(line,`trojan-go\:\/\/\S+`);
 		if( trojan ) {
 			var trojanUrl = ..inet.url.split(trojan) 
@@ -612,7 +769,7 @@ importFromString = function(str,subscribeUrl){
 					network = "tcp";
 					protocol = "trojan-go"
 				};
-				
+
 				if(trojanUrl.extraInfo){
 					var info = ..inet.url.splitParameters(trojanUrl.extraInfo);
 					outbound.sni = info.sni || info.peer;
@@ -621,28 +778,28 @@ importFromString = function(str,subscribeUrl){
 					if(info.allowInsecure!==null) {
 						outbound.allowInsecure = (info.allowInsecure!=="0" ||info.allowInsecure!=="false" ) 
 					}
-					
+
 					if(info.type && info.type!=="original"){
 						outbound.network = info.type;
 						if(outbound.network=="h2"){
 							outbound.network="http"
 						}
 					}
-					
+
 					outbound.security = info.encryption; 
 				}
-				
+
 				if(trojanUrl.location){
 					outbound.ps = ..inet.url.decode(trojanUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-
+		//ssr链接
 		var ssrBase64 = ..string.match(line,`ssr\:\/\/([\w=+/-_]+)`);
 		if( ssrBase64 ) { 
 			var ssrUrl = ..crypt.bin.decodeUrlBase64(ssrBase64);	
@@ -675,16 +832,16 @@ importFromString = function(str,subscribeUrl){
 						outbound.sni = ..crypt.bin.decodeUrlBase64(params.ot_domain);
 					}
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
-				
+
 				if(outbound.address && outbound.port){
 					..table.push(outbounds,outbound);
 					continue;
 				}
 			}
 		}
-
+		//socks链接
 		var socks = ..string.match(line,`socks\:(\/\/\S+)`); 
 		if( socks ) { 
 			var socksUrl = ..inet.url.split("socks5:"+socks) 
@@ -699,18 +856,18 @@ importFromString = function(str,subscribeUrl){
 				if(socksUrl.user && socksUrl.password){
 					outbound.id = socksUrl.user +":"+ socksUrl.password
 				}  
-				
+
 				if(socksUrl.location){
 					outbound.ps = ..inet.url.decode(socksUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-
+		//http或https链接
 		var proxy = ..string.match(line,`proxy\:\/\/\S+`); 
 		if( proxy ) { 
 			var proxyUrl = ..inet.url.split(proxy) 
@@ -736,18 +893,18 @@ importFromString = function(str,subscribeUrl){
 						outbound.allowInsecure = (info.allowInsecure!=="0" ||info.allowInsecure!=="false" ) 
 					}
 				}
-				
+
 				if(proxyUrl.location){
 					outbound.ps = ..inet.url.decode(proxyUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-
+		//naive链接
 		var naive,naiveNetwork = ..string.match(line,`(naive\+(\w+)\:\/\/\S+)`);
 		if( naive ) {
 			var naiveUrl = ..inet.url.split(naive) 
@@ -759,11 +916,11 @@ importFromString = function(str,subscribeUrl){
 					network = naiveNetwork;
 					protocol = "naive"
 				};
-				
+
 				if(naiveUrl.user && naiveUrl.password){
 					outbound.id = naiveUrl.user +":"+ naiveUrl.password
 				} 
-				
+
 				if(naiveUrl.extraInfo){
 					var info = ..inet.url.splitParameters(naiveUrl.extraInfo);
 					if(info["extra-headers"]){
@@ -773,16 +930,19 @@ importFromString = function(str,subscribeUrl){
 				if(naiveUrl.location){
 					outbound.ps = ..inet.url.decode(naiveUrl.location);
 				}
-	
+
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
-			
+
 			continue;
 		}
-		
+		//clashJson格式
+		//debug.debug();
 		var clashJson = ..string.match(line,`^\s*-\s*(%\{\})\s*$`);
 		if( clashJson ) {
+			//debug.debug();
+			//var outbound = ..web.json.parse(line);
 			var outbound  = ..web.json.tryParse(clashJson)
 			if(type(outbound)=="table"){
 				if(outbound.type){
@@ -792,12 +952,12 @@ importFromString = function(str,subscribeUrl){
 
 						outbound.networkParam = outbound.protocol_param;
 						outbound.protocol_param =  null;
-						 
+
 						outbound.sni = outbound.ot_domain;
 						outbound.path = outbound.ot_path;
 						outbound.tls = outbound.ot_enable ? "tls" : null;  
 					}
-					
+
 					if(outbound.type=="ss"){
 						outbound.type =	"shadowsocks";
 						outbound.network = "tcp";			
@@ -805,15 +965,30 @@ importFromString = function(str,subscribeUrl){
 					outbound.protocol = outbound.type;
 					outbound.type = null;
 				}
-				
-				if( validOutbound(outbound) ){
+			
+			//debug.debug();
+			//debug.log.print(outbound)
+			//console.dump(outbound);
+			
+			
+			//var test1  = validOutbound(outbound) ; 
+			//console.dump(test1);
+			 
+				//if( validOutbound(outbound) ){
+				validOutbound(outbound)
+				if( outbound.address ){
+					
+					//console.dump(outbound);
+					
 					outbound.subscribeUrl = subscribeUrl; 
 					..table.push(outbounds,outbound );
+					
+					//console.dump(outbounds); 
 				}
 				continue;
 			}
 		}
-		
+		//json格式
 		var json = ..string.match(line,`^\s*%\{\}\s*$`);
 		if( json ) {
 			var outbound  = ..web.json.tryParse(json)
@@ -823,38 +998,43 @@ importFromString = function(str,subscribeUrl){
 			}
 		}
 	}
-	
+	if(!#outbounds) {
+		console.dump(str);
+		debug.log.print(str);
+		}
+		debug.log.print("抓取到"+#outbounds+"个服务器");
 	return outbounds;
 }
 
+//从剪贴板导入节点或订阅,（订阅配置页面使用）
 importFromClipboard  = function(refreshConfig){
     import win.clip;
 	var str = ..win.clip.read();
-	
+
     if( refreshConfig===false ){
 		if(!str){return;}
-		
-		str = ..string.trim(str,'"\'\t\r\n ');
-		
+
+		str = ..string.trim(str,'"\'\t\r\n ');//从字符串首尾清除指定的一个或多个单字节字符（"'制表符(横向跳格) 回车换行 ）
+
 		if( ..string.startWith(str,"http://") || ..string.startWith(str,"https://") 
-			|| ..string.match(str,"^\s*/\N+\s*$") ){
-			
+			|| ..string.match(str,"^\s*/\N+\s*$") ){// ^模式串必须从文本的开始处匹配：\s空白符、*任意字符、/、\N不是换行符1次或多次、\s空白字符、*任意字符、$模式串必须匹配至文本结束处）
+
 			return importFormSubscription(str);
 		}
-		
+
 		return importFromString(str);
     }
 	elseif( refreshConfig===true ){
 		if(str){
-			str = ..string.trim(str,'"\'\t\r\n '); 
+			str = ..string.trim(str,'"\'\t\r\n '); //（"'制表符(横向跳格) 回车换行 ）
 			if( ..string.startWith(str,"http://") || ..string.startWith(str,"https://") 
-				|| ..string.match(str,"^\s*/\N+\s*$") ){
-				
+				|| ..string.match(str,"^\s*/\N+\s*$") ){// ^模式串必须从文本的开始处匹配：\s空白符、*任意字符、/、\N不是换行符1次或多次、\s空白字符、*任意字符、$模式串必须匹配至文本结束处）
+
 				//import UpdateSubscription;
 				if( updateSubscription({[str]=true}) ){return true}
 				else {return false}
 			}
-			
+
 			var impoutbounds = importFromString(str);
 			if(#impoutbounds){
 				var count = #impoutbounds;
@@ -877,40 +1057,48 @@ validAll = function(outbounds){
 			..table.remove(outbounds,i);
 		} 
 	} 
-	
+
 	return outbounds;
 }
-	
+
 validOutbound = function(outbound){  
 try{	
+	//var outbound = outbound1 
 	if(type(outbound)!="table"){ return;  }
+
+	if(outbound.obfs_param){
+		outbound.obfsParam = outbound.obfs_param;
+		outbound.obfs_param = null;
+	}
 	
-	outbound.obfsParam = outbound.obfs_param;
-	outbound.obfs_param = null;
+	if(outbound["obfs-param"]){
+		outbound.obfsParam=outbound["obfs-param"];
+		outbound["obfs-param"]=null;
+	}
 	
 	if(outbound.aid){
 		outbound.alterId = outbound.aid;
 		outbound.aid = null;
 	}
-	
+
 	if(outbound.add){
 		outbound.address = outbound.add;
 		outbound.add = null;
-		..table.define(outbound);
+		..table.define(outbound);//清空预定义键名
 	}
-	
+
 	if(outbound.net){
 		outbound.network = outbound.net;
 		outbound.net = null;
 		..table.define(outbound);
 	}
-	
+
 	if(outbound.peer ){
 		if(#outbound.peer) outbound.sni = outbound.peer;
 		outbound.peer = null;
 		..table.define(outbound);
 	}
-	
+
 	if(!outbound.security){
 		if(outbound.method && outbound.method!="none"){
 			outbound.security = outbound.method;
@@ -921,14 +1109,14 @@ try{
 		outbound.cipher = null;
 		outbound.method = null; 
 	}
-	
+
 	if(!outbound.address){
 		if(outbound.server){
 			outbound.address = outbound.server;
 			outbound.server = null;
 		}
 	}
-	
+
 	if(!outbound.ps){
 		if(outbound.remarks){
 			outbound.ps = outbound.remarks;
@@ -939,12 +1127,12 @@ try{
 			outbound.name = null;
 		}
 	} 
-	
+
 	if(!outbound.port){
 		if(outbound.server_port){
 			outbound.port = outbound.server_port;
 			outbound.server_port = null; 
-			
+
 			if(!outbound.protocol && outbound.password){
 				outbound.protocol = "shadowsocks";
 			}
@@ -953,90 +1141,90 @@ try{
 			outbound.port=443;
 		} 
 	}
-	
+
 	if(!outbound.protocol){
 		outbound.protocol = "vmess";
 		if(outbound.ps && (..string.find(outbound.ps,"@@vless") || ..string.find(outbound.ps,"@@xtls"))){
 			outbound.protocol = "vless";
 		}
 	}
-	
+
 	if(!outbound.id){
 		if(outbound.password){
 			outbound.id = outbound.password;
 			outbound.password = null; 
 		} 
-		
+
 		if(outbound.uuid){
 			outbound.id = outbound.uuid;
 			outbound.uuid = null; 
 		} 
 	}  
-	
+
 	if(outbound["skip-cert-verify"]){
 		outbound.allowInsecure = outbound["skip-cert-verify"];
 		outbound["skip-cert-verify"] = null;
 	}
-	
+
 	if(outbound["ws-path"]){
 		outbound.path = outbound["ws-path"];
 		outbound["ws-path"] = null;
 	}
-	
+
 	if(outbound["ws-headers"]){
 		outbound.headers = outbound["ws-headers"];
 		outbound["ws-headers"] = null; 
 	}
-	
+
 	var grpcOpts = outbound[["grpc-opts"]];
 	if( grpcOpts ){
 		if(grpcOpts[["grpc-service-name"]]){
 			outbound.grpcSni = grpcOpts[["grpc-service-name"]];
 		}
 	}
-		
+
 	if(type(outbound.tls)!="string"){
 		if(outbound.tls) outbound.tls = "tls";
 		else outbound.tls = "";
 	}
-	
+
 	if(outbound.servername){
 		outbound.host = outbound.servername;
 		outbound.servername = null;
 	}
-	
+
 /*
 	import debug.log
 	import console
 	debug.log.print(outbound);
 	console.dump(outbound)
 */
-	
-	var httpOpts = outbound["http-opts"];  
-	
+
+	var httpOpts = outbound["http-opts"]: outbound["h2-opts"];   
+
 	if(httpOpts){
 		if(!..table.count(httpOpts)){
 			httpOpts = outbound["h2-opts"] : httpOpts; 
 		}
-			
-		
+
+
 		if(httpOpts.method){
 			outbound.httpMethod = httpOpts.method;
 		}		
-		
+
 		if(httpOpts.path){
 			outbound.path = httpOpts.path;
 		}
-		
+
 		if(httpOpts.headers){
 			outbound.headers = httpOpts.headers; 
 		}
-		
+
 		if(httpOpts.host){
 			outbound.host = httpOpts.host; 
 		}
 	} 
-	
+
 	if(outbound.headers){
 		var headers = {};
 		for k,v in ..table.eachName(outbound.headers){ 
@@ -1044,7 +1232,7 @@ try{
 			headers[k] = v;	
 		}
 		outbound.headers = headers;
-		
+
 		if(outbound.headers.Host){
 			if(outbound.headers.Host==outbound.host){
 				outbound.headers.Host = null;
@@ -1054,44 +1242,71 @@ try{
 				outbound.headers.Host = null;
 			}
 		}
-		
+
 		if(!..table.count(outbound.headers)){
 			outbound.headers = null;	
 		}
 	}
-	
+
 	outbound["http-opts"] = null;
 	outbound["h2-opts"] = null;
 	outbound.country = null;
 	outbound.v = null;
 	
-	..table.define(outbound);
+	var pluginOpts = outbound["plugin-opts"];
+	if(pluginOpts){
+		var optsTemp = "";
+		if(pluginOpts["mode"] && pluginOpts["mode"]=="websocket"){
+			optsTemp += "tls;";
+		}
+		if(pluginOpts["host"]){
+			optsTemp += pluginOpts["host"]+";";
+		}
+		if(pluginOpts["path"]){
+			optsTemp += pluginOpts["path"]+";";
+		}
+		outbound.pluginOptions = optsTemp;
+	}
+	outbound["plugin-opts"] = null;
 	
+	
+	..table.define(outbound);
+		
+		//debug.log.print(outbound)
+		//console.dump(outbound) 
+		//debug.debug();
+		
 	if(outbound.address){
-		return outbound;
+		//var outer =outbound;
+		return true;  
+		//return outbound;
 	}
 }
 catch () {
 	import debug.log
 	import console
-	debug.log.print(outbound);
+	//debug.log.print(outbound);
 	//console.dump(outbound)
 		return false;
 		} 
 }
 
+//从订阅更新数据函数
 updateSubscription = function(outbondSubscribeUrlMap){
+	import debug
+	//console.print(outbondSubscribeUrlMap)
+
 	var cfgOutbounds = ..config.proxy.outbounds : ..table.array(); 
-	if(!outbondSubscribeUrlMap) {//传过来的为空，就从服务器中读取订阅信息
+	if(!outbondSubscribeUrlMap) {//传过来的为空，就从服务器列表中读取订阅信息（实际上没有传参）
 		outbondSubscribeUrlMap = {}
-		
+
 		for(i=#cfgOutbounds;1;-1){
 			var outbound = cfgOutbounds[i] 
 			if(outbound.subscribeUrl){
 				outbondSubscribeUrlMap[outbound.subscribeUrl] = true;	
 			}
 		}
-		
+
 		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
 		for(i=#cfgSubscribeUrls;1;-1){
 			var sub = cfgSubscribeUrls[i]  
@@ -1102,14 +1317,14 @@ updateSubscription = function(outbondSubscribeUrlMap){
 				outbondSubscribeUrlMap[sub.url] = null; 
 			}
 		}
-			
+
 		if(!..table.count(outbondSubscribeUrlMap)){ 
 			..mainForm.msgWarn('当前未启用任何订阅源,\n请先复制订阅源网址到剪贴板然后点击「批量导入链接」!', 1500);
 			//winform.btnUpdate.disabledText = null;
 			return;
 		}
 	}
-	
+//debug.debug()
 	var count = 0; 
 	for(url,data in outbondSubscribeUrlMap){
 		var impOutbounds = ..xray.outbounds.importFromString(url);
@@ -1117,7 +1332,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			for(i=#cfgOutbounds;1;-1){
 				var outbound = cfgOutbounds[i] 
 				if(outbound.subscribeUrl==url && outbound.ps != "已测通"){
-					..table.remove(	cfgOutbounds,i );
+					..table.remove(	cfgOutbounds,i );//先删除当前订阅网址下的原节点
 				}
 			}
 			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
@@ -1132,7 +1347,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	..publish("uiCommand.print","已找到" + count + "个订阅服务器。"); 
 	..publish("outbounds.updateConfigJson");
 	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
-	
+
 	return count;
 }
 
@@ -1144,7 +1359,7 @@ autoUpdateSubscription = function(){
 		if(!#sub.url){
 			continue;
 		}
-		
+
 		if(sub.checked ===  "启用") {
 			outbondSubscribeUrlMap[sub.url] = true; 
 		}
@@ -1158,10 +1373,10 @@ autoUpdateSubscription = function(){
 		function(winform,outbondSubscribeUrlMap,responseCache){
 			import inet.http;
 			import web.rest.github;
-			
+
 			var http = inet.http();
 			for(url,v in outbondSubscribeUrlMap){ 
-				
+
 				if( string.indexOf(url,"github.com")
 					|| string.indexOf(url,"raw.githubusercontent.com") 
 					){
@@ -1170,22 +1385,24 @@ autoUpdateSubscription = function(){
 				else{
 					outbondSubscribeUrlMap[url] = http.get(url);
 				}
-				
+
 				if(!outbondSubscribeUrlMap[url]){
 					continue;
 				}
-				
+
 				if(responseCache){
 					if(responseCache[url] && responseCache[url]===..string.crc32(outbondSubscribeUrlMap[url])){
 						outbondSubscribeUrlMap[url] = null;
 					} 
 				} 
 			}
-			
+
 			winform.publish("thread.subscriptionUpdated",outbondSubscribeUrlMap)
 		},..mainForm,outbondSubscribeUrlMap,_subscriptionResponseCache
 	)
 }
+
+
 
 var currentActiveOutbound = ..globalActiveOutbound;
 ..subscribe("activeOutbound",function(address){
@@ -1196,12 +1413,12 @@ var currentActiveOutbound = ..globalActiveOutbound;
     if(currentActiveOutbound){
     	return;
     }
-    
+
 	var cfgOutbounds = ..config.proxy.outbounds : ..table.array();
-	
+
 	var count = 0; 
 	for(url,data in outbondSubscribeUrlMap){ 
-		
+
 		var impOutbounds = ..xray.outbounds.importFromString(data,url);
 		if(#impOutbounds){
 			for(i=#cfgOutbounds;1;-1){
@@ -1210,29 +1427,58 @@ var currentActiveOutbound = ..globalActiveOutbound;
 					..table.remove(	cfgOutbounds,i );
 				}
 			}
-				
+
 			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;
 		}
 	}
-	
+
 	if(!count){
 		return;
 	}
-		
+
 	..config.proxy.outbounds = cfgOutbounds;
 	..config.proxy.save();
-	
+
 	..publish("outbounds.updateConfigJson");
 	..publish("uiCommand.restartxrayCore")
 	..publish("uiCommand.print","已自动刷新" + count + "个订阅服务器。")		 
 } )
 
-/*importFromClash = function(str,node){
-    if(node){
+importFromClash = function(str,node){
+	
+
+	
+    if(node){//如果包含结点
     	var start = false;var strTemp="";
-    	var levelTable = ..table.array();var levelATable = ..table.array();
-    	var levelLast = 0;var levelALast = 0;
+    	var levelTable = ..table.array();
+    	var levelATable = ..table.array();
+    	var levelLast = 0;
+    	var levelALast = 0;
+    	
+    	//debug.debug()
+    	//如果是非table形式的格式转为table格式的
+    	if( !..string.match(str,"%\{\}") ){
+    	    //console.dump(str)
+    	    //debug.log.print()
+    	    var temp1 = ..string.replace(str,"[<\r\n><\n\r>\r\n]",",");
+    	    temp1 = ..string.replace(temp1,"\,\,"," , "); 
+    	    //temp1 = ..string.replace(temp1,"\ ",""); 
+    	    //console.dump(temp1) 
+    	    //debug.log.print()
+    	    
+    		//debug.debug()	    
+    		temp1 = ..string.replace(temp1,"<\-\s+>",'\ \}\n\ \-\ \{');    		
+    		//console.dump(temp1)
+			//debug.log.print()
+			
+    			
+    		//console.dump(temp1)
+    		//debug.log.print()
+			
+    		return temp1;  
+    	}
+    	
     	for(line in ..string.lines(str) ){
         	//删除注释字段和空白行
         	line = ..string.splitEx(line,'\#')[1];
@@ -1242,9 +1488,12 @@ var currentActiveOutbound = ..globalActiveOutbound;
 				if(..string.startWith(line,"proxies")){start = true;continue;}
 				else {if(start){break;}continue;}
 			}
-			
+			//开始解析数据
 			if(start){
-				if( ..string.match(line,"^\s*\-\s*%\{\}\s*$") ){strTemp += line+'\n';}
+				
+				//debug.debug()
+				
+				if( ..string.match(line,"^\s*\-\s*%\{\}\s*$") ){strTemp += line+'\n';}//匹配到-｛｝
     			elseif( !..string.match(line,"^\s*\-\s*%\{\}\s*$") ){
     				var numNow = #(..string.match(line,"^(\s*)\a"));//键缩进量
     				var numANow = #(..string.match(line,"^(\s*)\-"));//数组缩进量
@@ -1256,7 +1505,7 @@ var currentActiveOutbound = ..globalActiveOutbound;
     					levelA=..table.count(levelATable);
     				}
     				elseif(!levelA && !numANow){levelA=0}
-    				
+
     				if( levelA>1 ){
     					line = ..string.replace(line,"^\s*(-)",'');
     					numNow = #(..string.match(line,"^(\s*)\a"));
@@ -1266,17 +1515,17 @@ var currentActiveOutbound = ..globalActiveOutbound;
     					if(levelLast){for(i=1;levelLast;1){temp = '}'+temp;}}
     					line = ..string.replace(line,"^\s*-\s*",temp);
     				}
-    				
+
     				if( ..string.match(line,"^\}*\n\-\{\s*\a") ){strTemp += line+","}//-name:1
     				elseif( ..string.match(line,"^\}\n\-\{\s*$") ){strTemp += line}//-
-    				
+
     				levelALast = levelA;
     				//确定键缩进等级
     				var level;
     				for(index,num in levelTable){if(num=numNow){level=index;break;}}
     				if(!level && numNow){..table.push(levelTable,numNow);level=..table.count(levelTable);}
     				elseif(!level && !numNow){level=0}
-    				
+
     				if( ..string.match(line,"^\s*\a[^\s\:]*(\:)\s*$") ){//name:
     					line = ..string.trim(line);
     					if( levelLast>0 && level>levelLast ){strTemp += line+"{"}
@@ -1289,7 +1538,7 @@ var currentActiveOutbound = ..globalActiveOutbound;
     					elseif( levelLast>0 && level<levelLast){strTemp += "},"+line}
     					elseif( level==levelLast ){strTemp += ","+line}
     				}
-    				
+
     				levelLast = level;
     			}
     		}
@@ -1297,10 +1546,15 @@ var currentActiveOutbound = ..globalActiveOutbound;
     	var match1 = ..table.count(..string.matches(strTemp,"\{"));
 		var match2 = ..table.count(..string.matches(strTemp,"\}"));
 		for(i=1;match1-match2;1){strTemp += "}"}
-		
-    	if( #(..string.trim(strTemp)) ){str = ..string.trim(strTemp)}	
+
+    	if( #(..string.trim(strTemp)) ){
+    		str = ..string.trim(strTemp);
+    		//debug.debug()
+    		return strTemp; 
+    	}	
     }
-	else {
+
+	else {//包含的是"proxy-providers"
 		var urlmap = ..table.array();
 		var start = false;var levelTable = ..table.array();
 		for(line in ..string.lines(str) ){
@@ -1312,14 +1566,14 @@ var currentActiveOutbound = ..globalActiveOutbound;
 				if(..string.startWith(line,"proxy-providers")){start = true;continue;}
 				else {if(start){break;}continue;}
 			}
-			
+
 			if(start){
 				var numNow = #(..string.match(line,"^(\s*)[^\s]"));//键缩进量
 				var level;
     			for(index,num in levelTable){if(num=numNow){level=index;break;}}
     			if(!level && numNow){..table.push(levelTable,numNow);level=..table.count(levelTable);}
     			elseif(!level && !numNow){level=0}
-    			
+
     			if(level==2){
     				var url = ..string.match(line,"^\s*url\:\s*(http.*)");
 					url = url ? ..string.trim(url,'"\'\s\t\r\n ');
@@ -1327,12 +1581,12 @@ var currentActiveOutbound = ..globalActiveOutbound;
     			}
 			}
 		}
-		
+
 		if(#urlmap){
 			return urlmap; 
 		}
 	}	
-}*/
+}
 
 /**intellisense(xray.outbounds) 
 exportSharedLinks(.(outbounds) = 导出分享链接

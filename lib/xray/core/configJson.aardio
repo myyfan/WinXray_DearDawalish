@@ -535,7 +535,10 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 
 	
 	// 如果代理节点有tls属性，且没有sni属性
+/*
 	if(#outbound.tls && !outbound.sni){
+*/
+	if(outbound.tls && !outbound.sni){
 		var host = outbound.host;
 		if(..table.isArray(host)){ host = host[1] } 
 		outbound.sni = host ? host : outbound.address
@@ -705,9 +708,15 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 			};
 			streamSettings={
 				network=outbound.network : "tcp";
-				security=#outbound.tls ? outbound.tls : null;
+				/*
+security=#outbound.tls ? outbound.tls : null;
+*/
+				security=outbound.tls ? outbound.tls : null;
 				// !!outbound.allowInsecure表示将该属性转换为布尔值
+/*
 				tlsSettings = #outbound.tls ? {
+*/
+				tlsSettings = outbound.tls ? {
 					allowInsecure = !!outbound.allowInsecure;
 					serverName = outbound.sni;
 				} : null

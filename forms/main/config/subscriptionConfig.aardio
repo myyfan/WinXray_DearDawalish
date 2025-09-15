@@ -297,6 +297,7 @@ winform.btnRemove.oncommand = function(id,event){
 		table.remove(subscribeUrls,items[i]);
 		winform.listview.delItem(items[i]);
 		
+/*
 		var outbounds = ..config.proxy.outbounds : ..table.array();
 		for(i=#outbounds;1;-1){
 			var outbound = outbounds[i]  
@@ -305,6 +306,7 @@ winform.btnRemove.oncommand = function(id,event){
 				outboundRemoved++;
 			}
 		} 
+*/
 	}
 	
 	config.proxy.save();

@@ -543,9 +543,10 @@ importFromString = function(str,subscribeUrl,subps){
 			}
 		}
 		var vmess2 = ..string.match(line,`vmess\:\/\/[^\@\s]+\@[^\?\#\s\:]+<\:\d+>*\S*`);
+		
 		if( vmess2 ) {
 			var vmessUrl = ..inet.url.split(vmess2) 
-			if(vmessUrl.user && vmessUrl.host && vmessUrl.port){
+			if(vmessUrl && vmessUrl.user && vmessUrl.host && vmessUrl.port){
 				var outbound = {
 					address = vmessUrl.host;
 					port = tonumber(vmessUrl.port) : 443; 
@@ -625,7 +626,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var vless = ..string.match(line,`vless\:\/\/\S+`);
 		if( vless ) {
 			var vlessUrl = ..inet.url.split(vless) 
-			if(vlessUrl.user && vlessUrl.host && vlessUrl.port){
+			if(vlessUrl && vlessUrl.user && vlessUrl.host && vlessUrl.port){
 				var outbound = {
 					address = vlessUrl.host;
 					port = tonumber(vlessUrl.port) : 443; 
@@ -721,7 +722,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var trojan = ..string.match(line,`trojan\:\/\/\S+`);
 		if( trojan ) {
 			var trojanUrl = ..inet.url.split(trojan) 
-			if(trojanUrl.user && trojanUrl.host){
+			if(trojanUrl && trojanUrl.user && trojanUrl.host){
 				var outbound = {
 					address = trojanUrl.host;
 					port = tonumber(trojanUrl.port) : 443; 
@@ -761,7 +762,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var trojan = ..string.match(line,`trojan-go\:\/\/\S+`);
 		if( trojan ) {
 			var trojanUrl = ..inet.url.split(trojan) 
-			if(trojanUrl.user && trojanUrl.host){
+			if(trojanUrl && trojanUrl.user && trojanUrl.host){
 				var outbound = {
 					address = trojanUrl.host;
 					port = tonumber(trojanUrl.port) : 443; 
@@ -845,7 +846,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var socks = ..string.match(line,`socks\:(\/\/\S+)`); 
 		if( socks ) { 
 			var socksUrl = ..inet.url.split("socks5:"+socks) 
-			if( socksUrl.host && socksUrl.port){ 
+			if( socksUrl && socksUrl.host && socksUrl.port){ 
 				var outbound = {
 					address = socksUrl.host;
 					port = tonumber(socksUrl.port);
@@ -871,7 +872,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var proxy = ..string.match(line,`proxy\:\/\/\S+`); 
 		if( proxy ) { 
 			var proxyUrl = ..inet.url.split(proxy) 
-			if( proxyUrl.host && proxyUrl.port){ 
+			if( proxyUrl && proxyUrl.host && proxyUrl.port){ 
 				var outbound = {
 					address = proxyUrl.host;
 					port = tonumber(proxyUrl.port);
@@ -908,7 +909,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var naive,naiveNetwork = ..string.match(line,`(naive\+(\w+)\:\/\/\S+)`);
 		if( naive ) {
 			var naiveUrl = ..inet.url.split(naive) 
-			if( naiveUrl.host ){
+			if( naiveUrl && naiveUrl.host ){
 				var outbound = {
 					address = naiveUrl.host;
 					port = tonumber(naiveUrl.port) : 443; 
@@ -999,8 +1000,8 @@ importFromString = function(str,subscribeUrl,subps){
 		}
 	}
 	if(!#outbounds) {
-		console.dump(str);
-		debug.log.print(str);
+		//console.dump(str);
+		//debug.log.print(str);
 		}
 		debug.log.print("抓取到"+#outbounds+"个服务器");
 	return outbounds;
@@ -1344,6 +1345,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	//..frmXray.removeRepeat();
 	..config.proxy.save();
 	..mainForm.msgOk("已刷新" + count + "个订阅服务器。",1500);
+	debug.log.print("已找到" + count + "个订阅服务器。")
 	..publish("uiCommand.print","已找到" + count + "个订阅服务器。"); 
 	..publish("outbounds.updateConfigJson");
 	..publish("uiCommand.restartxrayCore",cfgOutbounds) 

@@ -6,7 +6,7 @@ import xray.pacServer;
 
 namespace sysProxy;
 
-switch = function(mode){
+switchMode = function(mode){
 	..config.proxy.mode = mode : "direct";
 	//..config.proxy.save();
   
@@ -37,24 +37,24 @@ switch = function(mode){
 } 
 
 switchToGlobalMode = function(){
-	switch("proxy") 
+	switchMode("proxy") 
 }
 
 switchToPacMode = function(){  
-	switch("pac") 
+	switchMode("pac") 
 }
 
 switchToDirectMode  = function(){ 
-	switch("direct") 
+	switchMode("direct") 
 }
 
 switchHotkey  = function(){ 
     var mode = ..config.proxy.mode;
 	if( mode != "pac"){
-		switch("pac") 
+		switchMode("pac") 
 	}
 	else {
-		switch("proxy") 
+		switchMode("proxy") 
 	}
 	
 	return ..config.proxy.mode;
@@ -72,7 +72,7 @@ reset = function(proxy){
 	}
 	
 	..inet.conn.setProxy();
-	switch(..config.proxy.mode); 
+	switchMode(..config.proxy.mode); 
 } 
 
 ..subscribe("pacServer.restarted",function(pacPort){
@@ -88,7 +88,7 @@ reset = function(proxy){
 } )
 
 /**intellisense(sysProxy)
-switch(.(mode) = 切换代理模式，同步修改配置文件。\n可选参数："proxy"，"pac"，"direct"
+switchMode(.(mode) = 切换代理模式，同步修改配置文件。\n可选参数："proxy"，"pac"，"direct"
 switchToGlobalMode() = 设为全局代理，同步修改配置文件。
 switchToPacMode() = 设为PAC自动代理，同步修改配置文件。
 switchToDirectMode() = 设为禁用代理，同步修改配置文件。

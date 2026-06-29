@@ -389,7 +389,7 @@ winform.chkLan.oncommand = function(id,event){
 	winform.btnOpenFirewall.disabled = !winform.chkLan.checked;
 }
 
-winform.tbTestInterval.setTrackbarRange(5,600);
+winform.tbTestInterval.setTrackbarRange(10,600);
 winform.tbTestInterval.skin(style.trackbar);
 winform.tbTestInterval.progressPos = config.proxy.testInterval;
 winform.lbTestInterval.text = config.proxy.testInterval+"秒";
@@ -468,9 +468,9 @@ winform.btnOpenFirewall.oncommand = function(id,event){
 	process.control("firewall.cpl")	
 }
 
-
-
-
+winform.tbTestInterval.oncommand = function(id,event){
+	
+}
 
 winform.show();
 win.loopMessage();

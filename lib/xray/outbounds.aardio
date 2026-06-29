@@ -1330,12 +1330,14 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	for(url,data in outbondSubscribeUrlMap){
 		var impOutbounds = ..xray.outbounds.importFromString(url);
 		if(#impOutbounds){
+/*
 			for(i=#cfgOutbounds;1;-1){
 				var outbound = cfgOutbounds[i] 
 				if(outbound.subscribeUrl==url && outbound.ps != "已测通"){
 					..table.remove(	cfgOutbounds,i );//先删除当前订阅网址下的原节点
 				}
 			}
+*/
 			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
 			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;

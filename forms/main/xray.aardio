@@ -431,7 +431,7 @@ testOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTesting){
 				var lastStatusCode ;
 				for(i=1;2;1){					
 					var restClient = web.rest.client(,httpProxyAddress);
-					restClient._http.setTimeouts(4000,5000,5000);
+					restClient._http.setTimeouts(3000,3000,3000);//setTimeouts(连接超时, 请求超时, 接收超时)： 这个方法用于设置三个阶段的超时时间，单位是毫秒
 					timeTick = time.tick(); 
 					var ret = restClient.get("https://www.google.com/generate_204");
 					timeTick=time.tick() - timeTick; 
@@ -701,8 +701,8 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 	if(!(outbound && (outbound.address == outboundAddress))){
 		return;
 	}
-	
-	if(outbound.subscribeUrl){//如果开启"异常重新刷新订阅",则刷新
+	//如果节点全部无效并开启"异常重新刷新订阅",则刷新订阅
+	if(!#frmXray.validOutbounds && outbound.subscribeUrl){
 		frmXray.autoUpdateSubscription();
 	} 
 	
@@ -719,8 +719,9 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 		}
 		
 	if(enableRetry){
+		//处理失败节点
 		if(config.proxy.outbounds[outboundIndex].failedCount) {
-			config.proxy.outbounds[outboundIndex].failedCount += 1;//失败计数器,手动模式时不起作用
+			config.proxy.outbounds[outboundIndex].failedCount += 1;//给失败节点加1次失败次数//失败计数器,手动模式时不起作用
 			if(config.proxy.outbounds[outboundIndex].lastValiable){ 
 				listview.setItemText("上次可用："+config.proxy.outbounds[outboundIndex].lastValiable,outboundIndex,8);
 				//debug.debug(); 
@@ -735,13 +736,17 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 			config.proxy.outbounds[outboundIndex].failedCount = 1;
 			listview.setItemText("失败次数："+config.proxy.outbounds[outboundIndex].failedCount,outboundIndex,8);
 		}
-					
-		if(#frmXray.validOutbounds){			
+		//异常自动重联模式下，选择下一合适节点逻辑		
+		if(#frmXray.validOutbounds){
+						
 			var next = frmXray.validOutbounds[1];
+			//给每一个没有延迟数据的节点设默认值
 			if(!config.proxy.outbounds[next[1]].replyDelay ) 	config.proxy.outbounds[next[1]].replyDelay = 2000;	
 			var i;
 			//debug.log.printf("表大小为："+#frmXray.validOutbounds);
-			if(0 && frmXray.chkJustValid.checked){ //仅已测通勾选时，优先使用已测通，此处暂时不使用			
+			
+			//（以下断不使用，使用“已测通”功能在生成测速列表时已实践）仅已测通勾选时，优先使用已测通	
+			if(0 && frmXray.chkJustValid.checked){ 		
 /*
 			if(config.proxy.outbounds[next[1]].downSpeed){
 				for( i=2;#frmXray.validOutbounds;1 ){    
@@ -782,7 +787,47 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 				}
 */
 				
-				if(config.proxy.outbounds[next[1]].failedCount){	
+				//优先测试成功过的节点
+					for( i=2;#frmXray.validOutbounds;1 ){   
+						var j =frmXray.validOutbounds[i];
+						if(config.proxy.outbounds[next[1]].lastValiable){							
+							if(config.proxy.outbounds[j[1]].lastValiable) {//找出最新可用的服务器,没有记录的优先使用
+								if(time(config.proxy.outbounds[next[1]].lastValiable)<time(config.proxy.outbounds[j[1]].lastValiable)){
+									next=frmXray.validOutbounds[i];
+									continue;
+								}
+							}						
+						}
+						elseif(config.proxy.outbounds[j[1]].lastValiable){
+							next=frmXray.validOutbounds[i];
+							continue;
+						}																			
+					}
+				
+				//没有成功过的节点的话，按最快响应选
+				if(!config.proxy.outbounds[next[1]].lastValiable){	
+					for( i=2;#frmXray.validOutbounds;1 ){   
+						var j =frmXray.validOutbounds[i];
+					//	debug.log.print("next[3]",next[3])
+					//	debug.log.print("j[3]",j[3])
+						if(next[3]){							
+							if(j[3]) {//找出最新可用的服务器,没有记录的优先使用
+								if(next[3]>j[3]){
+									next=frmXray.validOutbounds[i];
+									continue;
+								}
+							}						
+						}
+						elseif(j[3]){
+							next=frmXray.validOutbounds[i];
+							continue;
+						}																			
+					}
+				}
+				
+				//没有成功过的节点的话，另寻
+/**
+				if(!config.proxy.outbounds[next[1]].lastValiable &&config.proxy.outbounds[next[1]].failedCount){	
 							
 					for( i=2;#frmXray.validOutbounds;1 ){   					 
 						var j =frmXray.validOutbounds[i];
@@ -807,10 +852,13 @@ if(config.proxy.outbounds[next[1]].failedCount) debug.log.print("failedCount为"
 					}
 */
 					
-				}				
+				}	
+**/			
 			}
 			
 			//debug.log.print(next);
+			
+			//如数据有变动，重新搜索
 			var test = frmXray.listview.getItemText(next[1],2)
 			if (test == next[2]) {
 				//debug.log.printf("地址相同")
@@ -1010,12 +1058,13 @@ frmXray.btnTcping.oncommand = function(id,event){
 			} 
 			// 无论连接是否成功，都要在列表视图显示延迟时间
 			frmXray.listview.setItemText(speedText,outboundIndex,7);
-
+			
+			frmXray.invalidOutbounds = {};
 			if(succeeded){
 				// 接收到第一个成功返回的节点后，改写frmXray.onTcpingReturn，使后面的成功节点
 				// 都只是放到frmXray.validOutbounds。之后激活第一个成功节点
 				frmXray.validOutbounds = {};
-				frmXray.invalidOutbounds = {};
+				
 				//debug.debug();
 				//重写frmXray.onTcpingReturn函数体
 				frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){//address为服务器地址
@@ -1028,7 +1077,7 @@ frmXray.btnTcping.oncommand = function(id,event){
 						table.push(frmXray.validOutbounds,{outboundIndex;address;speedText});
 					}
 					else{
-						table.push(frmXray.invalidOutbounds,{outboundIndex;address;speedText});
+						table.push(frmXray.invalidOutbounds,{outboundIndex;address;100000});//给无响应者一个大数
 						failedCount++;
 						if(failedCount==#items) {
 							frmXray.onTcpingFailed();
@@ -1044,7 +1093,7 @@ frmXray.btnTcping.oncommand = function(id,event){
 				switchOutbound(outboundIndex,address,#items>1);	//address为服务器地址
 			}
 			else{
-				table.push(frmXray.invalidOutbounds,{outboundIndex;address;speedText});
+				table.push(frmXray.invalidOutbounds,{outboundIndex;address;100000});//给无响应者一个大数
 				failedCount++;
 				// 所有节点都不通时执行
 				if(failedCount==#items) {
@@ -1099,6 +1148,17 @@ frmXray.btnTcping.oncommand = function(id,event){
 			}
 		}
 		manage.waitClose(); 
+		
+		//只把未响应的曾经可用的加进去
+/*
+		for(i=1;#frmXray.invalidOutbounds;1){ 
+			if(config.proxy.outbounds[frmXray.invalidOutbounds[i][1]].lastValiable){
+				table.push(frmXray.validOutbounds,frmXray.invalidOutbounds[i]);
+				debug.log.print("push lastValiable in");
+			}
+		}
+*/
+		//把所有未响应的加进去
 		table.append(frmXray.validOutbounds, frmXray.invalidOutbounds);
 		frmXray.btnTcping.disabledText = null;
 	}
@@ -2229,7 +2289,7 @@ frmXray.AutoTest = function(id,event){
 	import debug;
 	import debug.log;	
 	//console.dump(testTimerId);
-	debug.log.print("定时器被调用1：",testTimerId);
+	//debug.log.print("定时器被调用1：",testTimerId);
 	//debug.debug();
 	
   // 1. 安全清理：每次重新创建定时器前，必须先销毁可能存在的旧定时器
@@ -2251,10 +2311,10 @@ frmXray.AutoTest = function(id,event){
 	testTimerId = frmXray.setInterval( 
 			autoTestTime*1000,function(){
 				import debug
-				debug.log.print("定时器被调用2：",testTimerId);
+			//	debug.log.print("定时器被调用2：",testTimerId);
 
 				if(!(currentOutboundIndex && currentOutboundAddress)) {
-					debug.log.print("testTimerReturn") ;
+			//		debug.log.print("testTimerReturn") ;
 					return ; 
 				}
 

@@ -1832,7 +1832,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 */
 				//activeOutbound(nm.iItem,frmXray.listview.getItemText(nm.iItem,2),false); 
 				isManualSwitch = true;
-				switchOutbound(nm.iItem,frmXray.listview.getItemText(nm.iItem,2),false,false); 
+				switchOutbound(nm.iItem,frmXray.listview.getItemText(nm.iItem,2),true); //不为true会导致节点失败后自动切换一个节点
 			}
 		}
 		case 0xFFFFFFFB/*_NM_RCLICK*/  {//右键
@@ -1916,7 +1916,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 */
 						//activeOutbound(currentIdx,frmXray.listview.getItemText(currentIdx,2),false)
 						isManualSwitch = true;
-						switchOutbound(currentIdx,frmXray.listview.getItemText(currentIdx,2),false)
+						switchOutbound(currentIdx,frmXray.listview.getItemText(currentIdx,2),true)//不为true会导致节点失败后自动切换一个节点
 					}
 				});
 

@@ -1459,7 +1459,7 @@ importFromClash = function(str,node){
     	var levelLast = 0;
     	var levelALast = 0;
     	
-    //	debug.debug()
+    	debug.debug()
     	//如果是非table形式的格式转为table格式的
     	if( !..string.match(str,"%\{\}") ){
     	    //console.dump(str)

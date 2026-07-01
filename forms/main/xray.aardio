@@ -459,7 +459,7 @@ testOutbound = function(outboundIndex,outboundAddress,enableRetry,timerTesting){
 						return ; 
 						
 					}		
-					sleep(500);
+					sleep(500);								
 				}
 				
 				
@@ -840,7 +840,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 				}
 */
 				//没有成功过的节点的话，按最快响应选
-				debug.log.print(haveValidAddress);
+		//		debug.log.print(haveValidAddress);
 				
 				if(haveValidAddress && !config.proxy.outbounds[next[1]].downSpeed && !config.proxy.outbounds[next[1]].lastValiable){	
 					var j;
@@ -879,7 +879,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,enableRetry){
 				
 				
 				if(!config.proxy.outbounds[next[1]].downSpeed && !config.proxy.outbounds[next[1]].lastValiable && next[3]>99999 ) haveValidAddress =false;
-				debug.log.print(haveValidAddress);
+			//	debug.log.print(haveValidAddress);
 				//没有成功过的节点的话，另寻
 /**
 				if(!config.proxy.outbounds[next[1]].lastValiable &&config.proxy.outbounds[next[1]].failedCount){	
@@ -2919,7 +2919,7 @@ setSearcherTimer = function(){
 				5000,function(){
 					//import config;
 					//config.proxy.save();
-					debug.log.print("frmXray.chkSearchMode.oncommand() is running.")
+		//			debug.log.print("frmXray.chkSearchMode.oncommand() is running.")
 					frmXray.chkSearchMode.oncommand();		
 					
 				} 
@@ -2941,7 +2941,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 	
 	if(frmXray.chkSearchMode.checked) {	//勾选才后台搜索，否则设定定时器间隔运行
 		if(frmXray.searchingBackground ) {
-		debug.log.print("searchingBackground is true,return.");
+	//	debug.log.print("searchingBackground is true,return.");
 			return ;
 		}
 		if(!xray.core.prcsxray ) {

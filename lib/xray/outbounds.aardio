@@ -209,15 +209,18 @@ importFromString = function(str,subscribeUrl,subps){
 	import debug.log
 	import console
 	//debug.debug();
-
+//	debug.log.print("从"+str);
+	var tempForDebugLog = str;
+	
 	if(!str){ return; }
 	str = ..string.trim(str);//从字符串首尾清除所有空白字符
 //如果是网址的话
+	//是网址就访问获取数据
 	if( ..string.startWith(str,"http://") 
 		|| ..string.startWith(str,"https://") 
 		|| ..string.match(str,"^\s*/\N+\s*$")  ){
 		
-		debug.log.print(str)
+	//	debug.log.print(str)
 		
 		import win.dlg.message;
 		var msgDlg = win.dlg.message(..mainForm); 
@@ -337,13 +340,6 @@ importFromString = function(str,subscribeUrl,subps){
 		}
 	}
 	
-/*
-			if (str){		
-			debug.log.print(str)
-			debug.debug();
-		}
-*/
-		
 	
 //从yaml格式导入clash节点
 	if(..string.match(str,"[\r\n]*proxies\s*\:")){
@@ -383,6 +379,7 @@ importFromString = function(str,subscribeUrl,subps){
 		jsonData = ..web.json.tryParse(str);
 		
 	}
+	
 //检查传入参数是否是一个数组(表)
 	if( ..table.isArray(jsonData) ){  //是一个数组的话就逐个解析
 			
@@ -1001,9 +998,10 @@ importFromString = function(str,subscribeUrl,subps){
 	}
 	if(!#outbounds) {
 		//console.dump(str);
-		//debug.log.print(str);
-		}
-		debug.log.print("抓取到"+#outbounds+"个服务器");
+		debug.log.print("从"+tempForDebugLog+"抓取到"+#outbounds+"个服务器");
+	}
+		
+		//debug.log.print("抓取到"+#outbounds+"个服务器");
 	return outbounds;
 }
 
@@ -1338,6 +1336,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 				}
 			}
 */
+			if(!#impOutbounds) debug.log.print("未从",url,"获取服务器")
 			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
 			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;
@@ -1460,7 +1459,7 @@ importFromClash = function(str,node){
     	var levelLast = 0;
     	var levelALast = 0;
     	
-    	//debug.debug()
+    //	debug.debug()
     	//如果是非table形式的格式转为table格式的
     	if( !..string.match(str,"%\{\}") ){
     	    //console.dump(str)
@@ -1503,7 +1502,7 @@ importFromClash = function(str,node){
     				var numANow = #(..string.match(line,"^(\s*)\-"));//数组缩进量
     				//确定数组缩进等级
     				var levelA;
-    				for(index,num in levelATable){if(num = numANow){levelA=index;break;}}
+    				for(index,num in levelATable){if(num == numANow){levelA=index;break;}}
     				if(!levelA && numANow){
     					..table.push(levelATable,numANow);
     					levelA=..table.count(levelATable);
@@ -1549,7 +1548,9 @@ importFromClash = function(str,node){
     	}
     	var match1 = ..table.count(..string.matches(strTemp,"\{"));
 		var match2 = ..table.count(..string.matches(strTemp,"\}"));
-		for(i=1;match1-match2;1){strTemp += "}"}
+		for(i=1;match1-match2;1){
+			strTemp += "}";
+		}
 
     	if( #(..string.trim(strTemp)) ){
     		str = ..string.trim(strTemp);

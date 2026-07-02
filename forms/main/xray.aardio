@@ -459,7 +459,7 @@ testOutbound = function(outboundIndex,outboundAddress,timerTesting){//定时检�
 						return ; 
 						
 					}		
-					sleep(500);								
+					//sleep(500);								
 				}
 				
 				
@@ -651,7 +651,7 @@ if(frmXray.chkSearchMode.checked ) {debug.log.print("chkSearchMode is checked")}
 	}
 */
 	
-	if(!timerTesting) {
+//	if(!timerTesting) {
 		
 		frmXray.edit.print("已切换到服务器：",address);
 		import TrafficStats;
@@ -660,7 +660,7 @@ if(frmXray.chkSearchMode.checked ) {debug.log.print("chkSearchMode is checked")}
 		//frmXray.chkAutoTest.oncommand();
 		//debug.debug();
 		
-	}
+//	}
 }
 
 subscribe("activeOutbound",function(address){
@@ -956,7 +956,7 @@ if(config.proxy.outbounds[next[1]].failedCount) debug.log.print("failedCount为"
 			
 			 
 			
-			frmXray.clearInterval(trafficTimerId);
+			frmXray.clearInterval(trafficTimerId);//取消流量统计定时器
 			//console.dump(config.proxy.outbounds[next[1]]);
 			//activeOutbound(next[1],next[2],enableRetry);//根据是否勾选"重连"来决定是否要后面要继续
 			..table.removeByValue(frmXray.validOutbounds,next);

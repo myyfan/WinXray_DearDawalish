@@ -256,13 +256,13 @@ winform.btnUpdate.oncommand = function(id,event){
 	} 
 		
 	//console.dump(outbondSubscribeUrlMap);
-	
+//	import xray
 	if(!xray.outbounds.updateSubscription(outbondSubscribeUrlMap)){
 		//winform.btnUpdate.disabledText = null;
 		
 		publish("uiCommand.restartxrayCore",outbounds) 
 	}
-	
+	..frmXray.removeRepeat();
 	winform.btnUpdate.disabledText = null;
 }
 //启用所有复选框

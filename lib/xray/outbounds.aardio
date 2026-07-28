@@ -6,6 +6,10 @@ import crypt;
 import crypt.bin;
 import console
 import debug
+import inet.http;
+import string.regex;
+
+
 
 namespace xray.outbounds;
 //分享链接
@@ -280,6 +284,8 @@ importFromString = function(str,subscribeUrl,subps){
 			return;
 		}
 
+/*
+		//在订阅里面寻找是否存在当前网址的订阅
 		var existIndex;
 		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls : ..table.array();
 		for(i=#cfgSubscribeUrls;1;-1){
@@ -290,9 +296,13 @@ importFromString = function(str,subscribeUrl,subps){
 				break;
 			}
 		} 
+*/
 		
 		//debug.debug();
 		 
+		 
+		//如果是新链接，就添加到订阅
+/*
 		if(!existIndex){
 			var tUrl = ..inet.url.split(subscribeUrl); 
 			..table.push(cfgSubscribeUrls,{url=subscribeUrl;ps=tUrl ? tUrl.host : "";checked="启用"})
@@ -303,6 +313,7 @@ importFromString = function(str,subscribeUrl,subps){
 		}
 		..config.subscribe.subscribeUrls = cfgSubscribeUrls;
 		..config.subscribe.save();
+*/
 	}
 
 	if(subscribeUrl){
@@ -1290,7 +1301,134 @@ catch () {
 		} 
 }
 
+
+
+//提取网页链接（硬编码白名单：只提取 .txt 和 .yaml，忽略大小写）
+var extractLinksFromUrl = function(url){
+	
+	// --- 调试日志 ---
+	..debug.log.print("[提取链接] 开始处理 URL: ", url);
+
+	// 1. 简单校验 URL
+	if(!..string.startWith(url, "http://") and !..string.startWith(url, "https://")){
+		..debug.log.print("[提取链接] 错误：URL 格式不合法");
+		return {}; 
+	}
+
+	// 2. 访问网页获取内容
+	var http = ..inet.http();
+	var htmlContent = http.get(url);
+	http.close();
+
+	if(!htmlContent){
+		..debug.log.print("[提取链接] 错误：网页获取失败或内容为空");
+		return {};
+	}
+	else {
+		..debug.log.print("[提取链接] 成功获取网页内容，长度: ", #htmlContent);
+	}
+
+	// 准备结果表
+	var resultLinks = {};
+	var linkMap = {};
+
+	// ============================================
+	// 【这里定义你需要的后缀名，忽略大小写】
+	// ============================================
+	var allowedExts = {"v2ray"; "clash"; "singbox"; ".txt"; ".html"; ".net"; ".json"; ".yml"; ".yaml"};
+
+	// 内部函数：判断链接是否符合要求
+	var isValidLink = function(link){
+		if(!link) return false;
+
+		// 1. 基础过滤（空值、锚点、JS脚本）
+		if(..string.startWith(link,"#") || ..string.startWith(link,"javascript:")){
+			return false;
+		}
+
+		// 2. 截取问号前的路径（去掉 ?query=xxx）
+		var pathPart = link;
+		var pos = ..string.find(link, "?", 1, true);
+		if(pos) pathPart = ..string.left(link, pos - 1);
+
+		// 3. 转小写进行匹配（实现忽略大小写）
+		pathPart = ..string.lower(pathPart);
+
+		// 4. 检查是否以指定后缀结尾
+		for(i=1; #allowedExts; 1){
+			// 后缀也转小写匹配
+			var ext = ..string.lower(allowedExts[i]);
+			if(..string.endWith(pathPart, ext)){
+				return true; // 匹配成功
+			}
+		}
+		
+		return false; // 不在白名单内，不要
+	}
+
+	// 内部函数：添加链接
+	var addLink = function(link){
+		link = ..string.trim(link);
+		
+		if(!isValidLink(link)) return;
+
+		if(!linkMap[link]){
+			linkMap[link] = true;
+			..table.push(resultLinks, link);
+
+			// 只打印前 5 条
+			if(#resultLinks <= 50){
+				..debug.log.print("[提取链接] 有效链接: ", link);
+			}
+		}
+	};
+
+
+	// 提取 href="..."和href='...'
+	//..debug.log.print(htmlContent);
+	..debug.log.print("[提取链接] 开始匹配 href 属性...");
+	for link in ..string.gmatch(htmlContent, `href\s*=\s*["']([^"']+)["']`) {
+		addLink(link);          
+	}
+
+
+
+/*
+	// 3. 提取 href="..."
+	..debug.log.print(htmlContent);
+	..debug.log.print("[提取链接] 开始匹配 href 属性...");
+	for link in ..string.gmatch(htmlContent, `href\s*=\s*"([^"]+)"`) {
+		addLink(link);          htmlContent, `href\s*=\s*["']([^"']+)["']`
+	}
+
+	// 4. 提取 href='...'
+	for link in ..string.gmatch(htmlContent, `href\s*=\s*'([^']+)'`) {
+		addLink(link);
+	}
+*/
+
+	// 5. 提取纯文本链接
+	..debug.log.print("[提取链接] 开始匹配纯文本链接...");
+	for link in ..string.gmatch(htmlContent, `(https?://[^\s<>"']+)`) {
+		if(..string.endWith(link, ".") or ..string.endWith(link, ",")){
+			link = ..string.left(link, #link-1);
+		}
+		addLink(link);
+	}
+
+	..debug.log.print("[提取链接] 处理完成，共提取到有效链接: ", #resultLinks, " 个");
+
+	return resultLinks;
+}
+
+
+
+
+
+
+
 //从订阅更新数据函数
+
 updateSubscription = function(outbondSubscribeUrlMap){
 	import debug
 	//console.print(outbondSubscribeUrlMap)
@@ -1327,6 +1465,39 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	var count = 0; 
 	for(url,data in outbondSubscribeUrlMap){
 		var impOutbounds = ..xray.outbounds.importFromString(url);
+		
+        var links = extractLinksFromUrl(url);
+        
+        
+     //   debug.debug();
+        for k,link in links {
+          //  var servers = ..xray.outbounds.importFromString(link);
+          debug.log.print(link);
+        	..table.append(impOutbounds, ..xray.outbounds.importFromString(link));
+        }
+        
+	//标记重复节点
+	for(i=1;#impOutbounds;1){
+		for(j=i+1;#impOutbounds;1){
+			//if( j<=i ){ continue }
+			if( impOutbounds[j].address==impOutbounds[i].address 
+				&& impOutbounds[j].port==impOutbounds[i].port ){
+				impOutbounds[j].repeat=true;
+			}
+		}
+	}
+	//删除重复节点
+	var removecount=0;
+	for(i=#impOutbounds;1;-1){
+		if(impOutbounds[i].repeat){
+			..table.remove(impOutbounds,i);
+			removecount++;
+		}
+	}
+	debug.log.print("删除重复服务器",removecount,"个")	;
+		
+		
+		
 		if(#impOutbounds){
 /*
 			for(i=#cfgOutbounds;1;-1){
@@ -1459,7 +1630,7 @@ importFromClash = function(str,node){
     	var levelLast = 0;
     	var levelALast = 0;
     	
-    	debug.debug()
+    //	debug.debug()
     	//如果是非table形式的格式转为table格式的
     	if( !..string.match(str,"%\{\}") ){
     	    //console.dump(str)

@@ -396,6 +396,7 @@ winform.lbTestInterval.text = config.proxy.testInterval+"秒";
 winform.tbTestInterval.onPosChanged = function( pos,thumbTrack ){
 	winform.lbTestInterval.text = pos+"秒";
 	config.proxy.testInterval = pos;
+	..frmXray.AutoTest();
 	config.proxy.save();
 }
 

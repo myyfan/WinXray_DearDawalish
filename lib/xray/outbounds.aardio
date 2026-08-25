@@ -1512,7 +1512,9 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;
 		}
+		if(#..config.proxy.outbounds >10000) ..frmXray.removeRepeat();
 	}
+	
 	//import xray
 	//..frmXray.removeRepeat();
 	..config.proxy.save();

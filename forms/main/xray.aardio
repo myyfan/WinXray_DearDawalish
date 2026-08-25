@@ -3189,7 +3189,7 @@ import thread.works;
 
 
 // 搜索线程池（单例，顺序执行）
-var searcherPool = thread.works(10, function(taskData) {
+var searcherPool = thread.works(5, function(taskData) {
 	import web.rest.client;
 	import debug.log;
 	
@@ -3275,11 +3275,63 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 		frmXray.listview.ensureVisible(frmXray.searcherIndex);//确保此行可见	
         frmXray.listview.setItemText("后台测试中", frmXray.searcherIndex, 8);
 
-        // 删除旧搜索配置（略）
-        // ... 保持原有代码不变 ...
-
-        // 添加新搜索配置（略）
-        // ... 保持原有代码不变 ...
+		
+		//先清除xray搜索服务器配置，然后再添加新的
+		var cleaner;
+		var i = 1;			
+		while(!cleaner && i<4 ){
+			//console.print("删除配置回复null")	
+			//cleaner = xray.core.stopSearcher(frmXray.edit,outbound);
+			i++;
+			cleaner = xray.core.deleteOutbound(frmXray.edit,outbound,"proxySearcher","searcherConfig.json");
+		}
+		//console.print("删除配置回复："+cleaner)	
+		//frmXray.searcherIndex = 1;
+		
+		//console.print("next.lastValiable:"+next.lastValiable)
+		var adder//xray添加搜索配置		
+		while(!adder && i>1 ){
+			//console.print("添加配置回复null")
+			//adder = xray.core.startSearcher(frmXray.edit,next);
+			i--;
+			adder = xray.core.addOutbound(frmXray,frmXray.edit,next,"proxySearcher","searcherConfig.json");
+		}
+		//console.print("添加配置回复："+adder);
+		
+/*
+		
+		//for(p=frmXray.searcherIndex;#outbounds;1){
+			next = outbounds[frmXray.searcherIndex]; 
+			
+			console.print("选择前next地址为：")	
+			console.dump(next.address);		
+			
+			if(next.failedCount){							
+			for( i=frmXray.searcherIndex+1;#outbounds;1 ){   					 
+				var j =outbounds[i];
+				if(outbounds[i].ps == "已测通"){
+					continue;	
+				}		
+				if(!outbounds[i].failedCount) {//找出最近可用的服务器,没有记录的失败计数视为0
+					next=j;
+					break;
+				}
+				elseif(next.failedCount > j.failedCount){
+					next=j;
+				}						
+			}
+			if(next.failedCount){
+				debug.log.print("后台搜索failedCount为"+next.failedCount+"当前服务器为："+next.address);
+			}
+			else {
+				debug.log.print("后台搜索failedCount为0或NULL");
+			}
+				
+			}	
+*/
+			
+			//console.print("选择后next地址为：")	
+			//console.dump(next.address);
 
         // ★ 替换 thread.invoke 为线程池投递 ★
         var taskData = {

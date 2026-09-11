@@ -1461,7 +1461,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			return;
 		}
 	}
-//debug.debug()
+	//debug.debug()
 	var count = 0; 
 	for(url,data in outbondSubscribeUrlMap){
 		var impOutbounds = ..xray.outbounds.importFromString(url);
@@ -1476,25 +1476,25 @@ updateSubscription = function(outbondSubscribeUrlMap){
         	..table.append(impOutbounds, ..xray.outbounds.importFromString(link));
         }
         
-	//标记重复节点
-	for(i=1;#impOutbounds;1){
-		for(j=i+1;#impOutbounds;1){
+		//标记重复节点
+		for(i=1;#impOutbounds;1){
+			for(j=i+1;#impOutbounds;1){
 			//if( j<=i ){ continue }
 			if( impOutbounds[j].address==impOutbounds[i].address 
 				&& impOutbounds[j].port==impOutbounds[i].port ){
 				impOutbounds[j].repeat=true;
 			}
 		}
-	}
-	//删除重复节点
-	var removecount=0;
-	for(i=#impOutbounds;1;-1){
-		if(impOutbounds[i].repeat){
-			..table.remove(impOutbounds,i);
-			removecount++;
 		}
-	}
-	debug.log.print("删除重复服务器",removecount,"个")	;
+		//删除重复节点
+		var removecount=0;
+		for(i=#impOutbounds;1;-1){
+			if(impOutbounds[i].repeat){
+				..table.remove(impOutbounds,i);
+				removecount++;
+			}
+		}
+		debug.log.print("删除重复服务器",removecount,"个")	;
 		
 		
 		
@@ -1512,7 +1512,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;
 		}
-		if(#..config.proxy.outbounds >10000) ..frmXray.removeRepeat();
+	//	if(#..config.proxy.outbounds >15000) ..frmXray.removeRepeat();
 	}
 	
 	//import xray

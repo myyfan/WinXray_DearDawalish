@@ -474,9 +474,9 @@ var taskQueueA = thread.works(5,
 
 
         var lastStatusCode;
-        for(i=1;2;1){
+        for(i=1;5;1){
             var restClient = web.rest.client(, httpProxyAddress);
-            restClient._http.setTimeouts(3000,3000,3000); //连接超时, 请求超时, 接收超时
+            restClient._http.setTimeouts(2000,2000,2000); //连接超时, 请求超时, 接收超时
 
             var timeTick = time.tick();
             var ret = restClient.get("https://www.google.com/generate_204");
@@ -944,38 +944,41 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 					if (#validAddresses) { //如果没有可用服务器，往后使用未测通的
 						//优先找历史最大下载速度节点
 						
-						var j;
+						
 						next = validAddresses[1]
 						if(#validAddresses >1){
+							var j;
+/*
 							for( i=2;#validAddresses;1 ){    
 								j =validAddresses[i];
 								if(config.proxy.outbounds[j[1]].downSpeed) {
-								if(config.proxy.outbounds[next[1]].downSpeed){
-									if(config.proxy.outbounds[next[1]].downSpeed<config.proxy.outbounds[j[1]].downSpeed){
-										next=validAddresses[i];
-									}
-								}
-								else next=validAddresses[i];
-							}
-							}
-						
-				
-							//没有再尝试曾成功过的节点
-							if(!config.proxy.outbounds[next[1]].downSpeed  ){
-							var j;
-							for( i=2;#validAddresses;1 ){ 
-								j =validAddresses[i];
-								if(config.proxy.outbounds[j[1]].lastValiable) {
-									if(config.proxy.outbounds[next[1]].lastValiable){
-										if(time(config.proxy.outbounds[next[1]].lastValiable)<time(config.proxy.outbounds[j[1]].lastValiable)){
+									if(config.proxy.outbounds[next[1]].downSpeed){
+										if(config.proxy.outbounds[next[1]].downSpeed<config.proxy.outbounds[j[1]].downSpeed){
 											next=validAddresses[i];
 										}
 									}
 									else next=validAddresses[i];
-							
 								}
 							}
-						}
+*/
+						
+				
+							//没有再尝试曾成功过的节点
+							if(true || !config.proxy.outbounds[next[1]].downSpeed  ){
+						//		var j;
+								for( i=2;#validAddresses;1 ){ 
+									j =validAddresses[i];
+									if(config.proxy.outbounds[j[1]].lastValiable) {
+										if(config.proxy.outbounds[next[1]].lastValiable){
+											if(time(config.proxy.outbounds[next[1]].lastValiable)<time(config.proxy.outbounds[j[1]].lastValiable)){
+												next=validAddresses[i];
+											}
+										}
+										else next=validAddresses[i];
+							
+									}
+								}
+							}
 						}
 				//		debug.log.print(#validAddresses,next[1],next[2]);
 						//	debug.debug();
@@ -1319,6 +1322,7 @@ frmXray.btnTcping.oncommand = function(id,event){
 	frmXray.chkAutoTest.checked=true;//
 	config.proxy.AutoTest=true;//写入配置
 	isManualSwitch = false;
+	validAddresses = {};
 	haveValidAddress = true;//初始化，用来在自动找服务器时减少无意义的搜索下一个合适节点
 	currentOutboundIndex,currentOutboundAddress =null,null;
 	frmXray.listview.activeOutboundIndex = null;	//重置变量listview  activeOutboundIndex
@@ -1812,7 +1816,7 @@ frmXray.btnChangeServer.oncommand=function(){
 		
 	
 			
-			if(frmXray.listview.activeOutboundAddress) frmXray.listview.setItemText("可用,被手动切换掉",outboundIndex,8);//手动切换不能把当前代理服务器置为异常
+		//	if(frmXray.listview.activeOutboundAddress) frmXray.listview.setItemText("可用,被手动切换掉",outboundIndex,8);//手动切换不能把当前代理服务器置为异常
 			//frmXray.edit.print("手动更换服务器",listview.getItemText(outboundIndex,2)); 
 							
 			//activeOutbound(next[1],next[2],true,false);
@@ -2089,7 +2093,9 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 				});
 				
 				popmenu.add('立即更新所有订阅源',function(id){
-					xray.outbounds.updateSubscription();
+					thread.invoke( 
+						xray.outbounds.updateSubscription()
+					);
 					frmXray.removeRepeat();//更新所有订阅源后消除重复服务器
 				});
 				
@@ -2880,9 +2886,18 @@ subscribe("uiCommand.restartxrayCore",function(){
 		//console.dump(outbounds[i].failedCount);
 		//sleep(100);
 	//	if(#outbounds < 51 ) {break;}
-		if(type(outbounds[i])!="table" || ( outbounds[i].failedCount &&  outbounds[i].failedCount > 400 ) || (outbounds[i].ps != "已测通" && ( outbounds[i].failedCount &&  outbounds[i].failedCount > 4 ) ) ){
-			debug.log.print("outbounds["+i+"].failedCount = "+outbounds[i].failedCount+",删除");
-			table.remove(outbounds,i);
+		if(type(outbounds[i])!="table" || ( outbounds[i].failedCount &&  outbounds[i].failedCount > 4 ) ){
+			if(outbounds[i].ps == "已测通" ){
+				if(outbounds[i].failedCount &&  outbounds[i].failedCount > 100){
+					outbounds[i].ps =null;
+					outbounds[i].failedCount = 0;
+				}				
+			}else {
+				debug.log.print("outbounds["+i+"].failedCount = "+outbounds[i].failedCount+",删除");
+				table.remove(outbounds,i);
+			}
+			
+			
 		}
 	}	
 
@@ -3272,7 +3287,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
         thread.set("searchingBackground",true);
         frmXray.edit.print("后台搜索序号: " + frmXray.searcherIndex + " ,地址为：" + next.address + " 总数为：" + #outbounds);
 		
-		frmXray.listview.ensureVisible(frmXray.searcherIndex);//确保此行可见	
+	//	frmXray.listview.ensureVisible(frmXray.searcherIndex);//确保此行可见	
         frmXray.listview.setItemText("后台测试中", frmXray.searcherIndex, 8);
 
 		
@@ -3613,6 +3628,7 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 		
 	}
 	else {
+		publish("uiCommand.restartxrayCore");
 		return false;  
 	}
 	
@@ -3635,7 +3651,7 @@ frmXray.chkJustValid.oncommand = function(id,event){
 	config.proxy.chkJustValid=frmXray.chkJustValid.checked;
 	if(frmXray.chkJustValid.checked) {
 		//frmXray.chkValidNoSearch.checked=false;
-		frmXray.chkSearchMode.checked = false;
+		//frmXray.chkSearchMode.checked = false;
 		//frmXray.chkSearchMode.oncommand();
 		//isManualSwitch = false;
 	}

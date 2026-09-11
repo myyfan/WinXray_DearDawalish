@@ -16,12 +16,12 @@ write  = function(jsonPath,outbound,sockPort,httpPort){
 	}
 	
 	var currentCore = ..table.clone(..config.core.default);
-	if(! ..table.isArray(currentCore.outbounds) ){
+	if(! ..table.isArrayLike(currentCore.outbounds) ){
 		return null,"错误的出站代理服务器配置" 
 	}
 	
 	var inboundsInCore = currentCore.inbounds;
-	if(! ..table.isArray(inboundsInCore) ){
+	if(! ..table.isArrayLike(inboundsInCore) ){
 		return null,"错误的入站代理服务器配置" 
 	}
 	
@@ -59,7 +59,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort){
 	// 如果代理节点有tls属性，且没有sni属性
 	if(#outbound.tls && !outbound.sni){
 		var host = outbound.host;
-		if(..table.isArray(host)){ host = host[1] } 
+		if(..table.isArrayLike(host)){ host = host[1] } 
 		outbound.sni = host ? host : outbound.address
 	}
 	
@@ -498,7 +498,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 	}
 	
 	var currentCore = ..table.clone(..config.core.outBoundDefault);
-	if(! ..table.isArray(currentCore.outbounds) ){
+	if(! ..table.isArrayLike(currentCore.outbounds) ){
 		return null,"错误的出站代理服务器配置" 
 	}
 
@@ -540,7 +540,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 */
 	if(outbound.tls && !outbound.sni){
 		var host = outbound.host;
-		if(..table.isArray(host)){ host = host[1] } 
+		if(..table.isArrayLike(host)){ host = host[1] } 
 		outbound.sni = host ? host : outbound.address
 	}
 	

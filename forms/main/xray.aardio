@@ -1,6 +1,7 @@
 import debug;
 import debug.log;
 import console;
+import xray.protocols;
 
 import win.ui;
 import fonts.fontAwesome;
@@ -126,7 +127,9 @@ var activeOutbound
 		//debug.log.print(xray.core.prcsxray);
 		//var started
 		//console.dump(outbound);
-		if(!xray.core.prcsxray || outbound.protocol == "ssr" || outbound.protocol == "naive" ){
+		// 需要独立内核的协议（ssr/naive 等）：走重启内核，不能走 API 热替换
+// 跳过清单集中在 xray.protocols（换内核只改那一个文件）
+if(!xray.core.prcsxray || xray.protocols.isStandalone(outbound.protocol) ){
 			started,err = xray.core.restart(frmXray.edit,outbound);//重启内核
 			startTesting = started;
 			/*
@@ -338,7 +341,7 @@ switchOutbound = function(outboundIndex,outboundAddress,timerTesting){
 	
 	var started;
 	//内核运行不正常则重启内核
-	if(!xray.core.prcsxray || outbound.protocol == "ssr" || outbound.protocol == "naive"  ){
+	if(!xray.core.prcsxray || xray.protocols.isStandalone(outbound.protocol)  ){
 		started = xray.core.restart(frmXray.edit,outbound);
 		//debug.log.print("内核重启")
 		
@@ -3406,7 +3409,8 @@ frmXray.chkSearchMode.oncommand = function(id,event){
         var scanIndex = frmXray.searcherIndex;
         while(#batch < batchSize && scanIndex <= #outbounds){
             var node = outbounds[scanIndex];
-            if(node && node.protocol != "ssr" && node.protocol != "naive"){
+            // 跳过需要独立内核的协议（无法参与 Xray 多出口并发搜索）
+            if(node && !xray.protocols.isStandalone(node.protocol)){
                 table.push(batch, scanIndex);
             }
             scanIndex++;
@@ -3511,7 +3515,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 		}
 		var next = outbounds[frmXray.searcherIndex]; 
 		//debug.debug();
-		if(next.protocol == "ssr" || next.protocol == "naive"){
+		if(xray.protocols.isStandalone(next.protocol)){
 			//switchOutbound(frmXray.searcherIndex,next.address);
 			frmXray.searcherIndex ++;
 		//	debug.log.print(frmXray.searcherIndex);
@@ -3596,7 +3600,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 				//console.print("前outbounds[outboundIndex].lastValiable:"+outbounds[outboundIndex].lastValiable)
 				import web.rest.client;
 				/*
-if(outbound.protocol == "ssr" || outbound.protocol == "naive" ){
+if(xray.protocols.isStandalone(outbound.protocol) ){
 					console.dump(frmXray.searcherIndex);
 					frmXray.searcherIndex ++;
 					frmXray.chkSearchMode.oncommand();

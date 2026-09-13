@@ -239,6 +239,16 @@ importFromString = function(str,subscribeUrl,subps){
 	
 	if(!str){ return; }
 	str = ..string.trim(str);//从字符串首尾清除所有空白字符
+
+	// 带认证的 http(s) 代理链接（http://user:pass@host:port）不应被当作订阅源。
+	// 先转换为内部 scheme，避免落入下面的订阅源分支（订阅源几乎不会带 user@host:port 形式）。
+	// 注意：必须用多个变量接收，单变量只会拿到第一个捕获组
+	var httpProxyScheme,httpProxyUser,httpProxyHost,httpProxyPort = ..string.match(str,`^\s*(https?)\:\/\/([^\s\@\/]+)\@([^\s\@\/\:]+)\:(\d+)\s*$`);
+	if(httpProxyScheme){
+		// 内部 scheme 名称不能包含其它协议的子串（例如 "httpproxy://" 会命中 "proxy://" 分支）
+		str = "httppx://" ++ httpProxyScheme ++ "/" ++ httpProxyUser ++ "@" ++ httpProxyHost ++ ":" ++ httpProxyPort;
+	}
+
 //如果是网址的话
 	//是网址就访问获取数据
 	if( ..string.startWith(str,"http://") 
@@ -567,7 +577,8 @@ importFromString = function(str,subscribeUrl,subps){
 
 					outbound.type = "none";
 					outbound.subscribeUrl = subscribeUrl;
-					return outbound; 
+					..table.push(outbounds,outbound);
+					continue;
 				}
 			}
 		}
@@ -595,16 +606,17 @@ importFromString = function(str,subscribeUrl,subps){
 					outbound.key = info.key; 
 
 					outbound.network = info.type;
-					outbound.type = info.headerType; //kcp || quic
+					outbound.type = info.headertype; //kcp || quic
 
 					if(info.security) outbound.tls = info.security;
 					if(info.flow) outbound.flow = info.flow;
 					var insecure = info.allowinsecure;
 					if(insecure!==null) {
-						outbound.allowInsecure = (insecure!=="0" && insecure!=="false" && insecure!="") 
+						outbound.allowInsecure = (insecure!=="0" && insecure!=="false" && insecure!="")
 					}
-					if(info.disableSessionResumption) outbound.disableSessionResumption = info.disableSessionResumption;
-					if(info.alpn) outbound.alpn = info.alpn;	 
+					if(info.disablesessionresumption) outbound.disableSessionResumption = info.disablesessionresumption;
+					if(info.alpn) outbound.alpn = info.alpn;
+					if(info.fp) outbound["client-fingerprint"] = info.fp;
 				}
 
 				if(vmessUrl.location){
@@ -628,7 +640,8 @@ importFromString = function(str,subscribeUrl,subps){
 				outbound.address = outbound.add;
 			outbound.port = tonumber(outbound.port);
 				outbound.alterId = tonumber(outbound.aid);
-				outbound.security = "auto";
+				// v2rayN 格式：scy 为加密方式，缺省 auto
+				outbound.security = outbound.scy : "auto";
 				outbound.network = outbound.net : "tcp";
 				outbound.net = null;
 				outbound.add = null;
@@ -676,16 +689,26 @@ importFromString = function(str,subscribeUrl,subps){
 					outbound.key = info.key; 
 
 					outbound.network = info.type;
-					outbound.type = info.headerType; //kcp || quic
+					outbound.type = info.headertype; //kcp || quic
 
 					if(info.security) outbound.tls = info.security;
 					if(info.flow) outbound.flow = info.flow;
 					var insecure = info.allowinsecure;
 					if(insecure!==null) {
-						outbound.allowInsecure = (insecure!=="0" && insecure!=="false" && insecure!="") 
+						outbound.allowInsecure = (insecure!=="0" && insecure!=="false" && insecure!="")
 					}
-					if(info.disableSessionResumption) outbound.disableSessionResumption = info.disableSessionResumption;
-					if(info.alpn) outbound.alpn = info.alpn;	 
+					if(info.disablesessionresumption) outbound.disableSessionResumption = info.disablesessionresumption;
+					if(info.alpn) outbound.alpn = info.alpn;
+
+					// —— VLESS 官方 URI 规范字段补全（REALITY / XHTTP / gRPC 等）——
+					if(info.pbk) outbound["public-key"] = info.pbk;
+					if(info.sid) outbound["short-id"] = info.sid;
+					if(info.spx) outbound["spider-x"] = info.spx;
+					if(info.fp) outbound["client-fingerprint"] = info.fp;
+					if(info.servicename) outbound.grpcSni = info.servicename;
+					if(info.mode) outbound.mode = info.mode;
+					if(info.authority) outbound.authority = info.authority;
+					if(info.packetencoding) outbound.packetEncoding = info.packetencoding;
 				}
 
 				if(vlessUrl.location){
@@ -814,6 +837,11 @@ importFromString = function(str,subscribeUrl,subps){
 					}
 
 					outbound.security = info.encryption;
+					if(info.security && !info.encryption) outbound.tls = info.security;
+					if(info.fp) outbound["client-fingerprint"] = info.fp;
+					if(info.alpn) outbound.alpn = info.alpn;
+					var insecure = info.allowinsecure;
+					if(insecure!==null) outbound.allowInsecure = (insecure!=="0" && insecure!=="false" && insecure!="");
 				}
 
 				if(trojanUrl.location){
@@ -912,7 +940,7 @@ importFromString = function(str,subscribeUrl,subps){
 			}
 		}
 		//socks链接
-		var socks = ..string.match(line,`socks\:(\/\/\S+)`); 
+		var socks = ..string.match(line,`socks5?\:(\/\/\S+)`); 
 		if( socks ) { 
 			var socksUrl = ..inet.url.split("socks5:"+socks) 
 			if( socksUrl && socksUrl.host && socksUrl.port){ 
@@ -959,8 +987,10 @@ importFromString = function(str,subscribeUrl,subps){
 						outbound.protocol = "http";
 					}
 
-					if(info.allowInsecure){
-						outbound.allowInsecure = (info.allowInsecure!=="0" ||info.allowInsecure!=="false" ) 
+					// 注意：splitParameters 会把参数名全部转为小写
+					var insecure = info.allowinsecure;
+					if(insecure!==null){
+						outbound.allowInsecure = (insecure!=="0" && insecure!=="false" && insecure!="")
 					}
 				}
 
@@ -974,6 +1004,23 @@ importFromString = function(str,subscribeUrl,subps){
 
 			continue;
 		}
+		//http(s) 代理链接（带认证；已在入口转换为 httpproxy:// 内部 scheme，避免与订阅源冲突）
+		var hpScheme,hpUserInfo,hpHost,hpPort = ..string.match(line,`^httppx\:\/\/(https?)\/([^\@]+)\@([^\@\:]+)\:(\d+)`);
+		if( hpHost ) {
+			var outbound = {
+				address = hpHost;
+				port = tonumber(hpPort);
+				network = "tcp";
+				protocol = (..string.lower(hpScheme)=="https") ? "https" : "http";
+			};
+			var u,p = ..string.match(hpUserInfo,"^([^\:]+)\:(.+)$");
+			if(u && p){ outbound.id = ..inet.url.decode(u) ++ ":" ++ ..inet.url.decode(p); }
+			else { outbound.id = ..inet.url.decode(hpUserInfo); }
+			outbound.subscribeUrl = subscribeUrl;
+			..table.push(outbounds,outbound);
+			continue;
+		}
+
 		//naive链接
 		var naive,naiveNetwork = ..string.match(line,`(naive\+(\w+)\:\/\/\S+)`);
 		if( naive ) {
@@ -1007,6 +1054,93 @@ importFromString = function(str,subscribeUrl,subps){
 
 			continue;
 		}
+		//WireGuard 链接（Xray 26.x 原生支持该出站协议）
+		//格式：wireguard://私钥@服务器:端口?publicKey=..&address=..&reserved=1,2,3&mtu=1280#备注
+		var wg, wgQuery = ..string.match(line,`wireguard\:\/\/(\S+?)\?(\S+)`);
+		if(!wg) wg = ..string.match(line,`wireguard\:\/\/(\S+)`);
+		if( wg ) {
+			var wgQueryStr = wgQuery;
+			if(!wgQueryStr) wgQueryStr = ..string.match(wg,`\?(\S+)`);
+			// 去掉查询串与备注，得到 私钥@服务器:端口
+			var wgMain = wg;
+			var qs = ..string.indexOf(wgMain,"?");
+			if(qs) wgMain = ..string.left(wgMain,qs-1);
+			var hf = ..string.indexOf(wgMain,"#");
+			if(hf) wgMain = ..string.left(wgMain,hf-1);
+
+			var wgPriv,wgHost,wgPort = ..string.match(wgMain,`^([^\@]+)\@([^\:\?\#]+)\:(\d+)`);
+			if(!wgHost){
+				wgHost,wgPort = ..string.match(wgMain,`^([^\:\?\#]+)\:(\d+)`);
+			}
+			if(wgHost){
+				var outbound = {
+					address = wgHost;
+					port = tonumber(wgPort) : 51820;
+					network = "tcp";
+					protocol = "wireguard";
+				};
+				if(wgPriv) outbound["private-key"] = ..inet.url.decode(wgPriv);
+				if(wgQueryStr){
+					var info = ..inet.url.splitParameters(wgQueryStr);
+					outbound["public-key"] = info.publickey : info["public-key"];
+					outbound["pre-shared-key"] = info.presharedkey : info["pre-shared-key"];
+					outbound["local-address"] = info.address : info.ip;
+					if(info.ipv6) outbound.ipv6 = info.ipv6;
+					if(info.mtu) outbound.mtu = tonumber(info.mtu);
+					if(info.keepalive) outbound.keepAlive = tonumber(info.keepalive);
+					if(info.domainstrategy) outbound.domainStrategy = info.domainstrategy;
+					if(info.reserved){
+						var arr = ..table.array();
+						for(n in ..string.gmatch(info.reserved,`\d+`)) ..table.push(arr,tonumber(n));
+						if(#arr) outbound.reserved = arr;
+					}
+					var aips = info.allowedips : info["allowed-ips"];
+					if(aips) outbound["allowed-ips"] = ..string.split(aips,',');
+				}
+				var wgFrag = ..string.match(line,`\#(\S*)$`);
+				if(wgFrag) outbound.ps = ..inet.url.decode(wgFrag);
+
+				outbound.subscribeUrl = subscribeUrl;
+				..table.push(outbounds,outbound);
+			}
+			continue;
+		}
+
+		//其他协议：Xray 26.x 暂不支持这些协议名，但按协议规范完整导入并保留全部字段；
+		//生成配置时 ensureSupportedOutbound 会自动降级为 blackhole，避免整份配置加载失败。
+		var otherScheme,otherBody = ..string.match(line,`^\s*([a-zA-Z][a-zA-Z0-9\-\.\+]*)\:\/\/(\S+)$`);
+		if(otherScheme){
+			otherScheme = ..string.lower(otherScheme);
+			var importOnly = ["anytls";"tuic";"snell";"mieru";"shadowtls";"juicity";"hysteria";"naive";"hysteria-go"];
+			if(..table.find(importOnly,otherScheme)){
+				var oUrl = ..inet.url.split(otherScheme ++ "://" ++ otherBody);
+				if(oUrl && oUrl.host){
+					// Xray 的 hysteria 协议仅支持 version=2（即 hysteria2），
+					// 单独的 hysteria:// 链接是 v1，标记为 hysteria1 以便明确降级（而不是按 v2 错误生成）
+					var protocolName = otherScheme;
+					if(otherScheme=="hysteria") protocolName = "hysteria1";
+					var outbound = {
+						address = oUrl.host;
+						port = tonumber(oUrl.port) : 443;
+						network = "tcp";
+						protocol = protocolName;
+					};
+					if(oUrl.user) outbound.id = ..inet.url.decode(oUrl.user);
+					if(oUrl.password) outbound.password = ..inet.url.decode(oUrl.password);
+					if(oUrl.extraInfo){
+						var info = ..inet.url.splitParameters(oUrl.extraInfo);
+						for(k,v in info){ if(outbound[k]===null) outbound[k] = v; }
+						if(info.fp) outbound["client-fingerprint"] = info.fp;
+						if(info.allowinsecure!==null) outbound.allowInsecure = (info.allowinsecure!=="0" && info.allowinsecure!=="false");
+					}
+					if(oUrl.location) outbound.ps = ..inet.url.decode(oUrl.location);
+					outbound.subscribeUrl = subscribeUrl;
+					..table.push(outbounds,outbound);
+				}
+				continue;
+			}
+		}
+
 		//clashJson格式
 		//debug.debug();
 		var clashJson = ..string.match(line,`^\s*-\s*(%\{\})\s*$`);
@@ -1340,6 +1474,20 @@ try{
 	}
 	outbound["plugin-opts"] = null;
 	
+	
+	// ==== 网络类型校验与归一化 ====
+	// 订阅源常出现脏数据（network 写成乱码），会导致 Xray 整份配置加载失败。
+	// 注意：SSR 的 network 是混淆算法名（origin/auth_aes128_md5 等），必须跳过校验。
+	if(outbound.network && type(outbound.network)=="string"){
+		var net = ..string.lower(outbound.network);
+		if(net == "splithttp") net = "xhttp"; // 旧名归一化（Xray 26 已移除 HTTP 传输）
+		if(outbound.protocol != "ssr"){
+			if(!..table.find(["raw";"tcp";"ws";"websocket";"grpc";"xhttp";"httpupgrade";"mkcp";"kcp";"quic";"hysteria";"http";"h2"],net)){
+				net = null; // 非法值清空，生成配置时自动使用默认传输
+			}
+		}
+		outbound.network = net;
+	}
 	
 	..table.define(outbound);
 		

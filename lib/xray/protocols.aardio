@@ -1,0 +1,36 @@
+//xray 协议能力配置
+/*============================================================
+【将来升级 / 更换内核时，只需要修改本文件】
+
+1. xrayNative —— 当前内核原生支持的出站协议（生成端白名单）
+   生成端已内置各协议的完整配置生成代码（含 anytls / tuic / snell / mieru /
+   shadowtls / juicity / ssr 等），只是因为当前内核不认识这些协议名
+   （会以 "unknown config id" 拒绝加载整份配置、导致内核起不来），
+   所以白名单之外的协议会被自动降级为 blackhole，以保证程序正常运行。
+   → 换内核后把协议名加进本数组即可启用，无需改动其他任何代码。
+
+2. standalone —— 需要独立内核进程、无法经 Xray 出站承载的协议
+   后台批量搜索依赖 Xray 的多出口并发，这些协议无法参与，因此在搜索批次中被跳过
+   （但手动连接、节点管理、配置生成等其余功能仍完整支持）。
+   → 若将来内核能统一承载，清空本数组即可让它们参与搜索。
+============================================================*/
+namespace xray.protocols;
+
+//当前内核原生支持的出站协议（生成端白名单）
+xrayNative = [
+	"vless";"vmess";"trojan";"trojan-go";"shadowsocks";"ss";"socks";"socks5";
+	"https";"http";"hysteria2";"hysteria";"wireguard";
+];
+
+//需要独立内核进程的协议（后台搜索会跳过）
+standalone = ["ssr";"naive"];
+
+//协议是否被内核原生支持
+isNative = function(protocol){
+	return ..table.find(xrayNative,protocol) ? true : false;
+};
+
+//协议是否需要独立内核
+isStandalone = function(protocol){
+	return ..table.find(standalone,protocol) ? true : false;
+};

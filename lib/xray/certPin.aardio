@@ -1,0 +1,148 @@
+//certPin TLS 证书指纹（纯 aardio 实现：不需要 .NET，不启动额外进程）
+/*
+用途：
+Xray 26.x 已移除 allowInsecure（2026-06-01 起为硬错误），
+自签证书节点需改用 pinnedPeerCertSha256 / verifyPeerCertByName。
+本库通过 TLS 1.2 握手直接读取对端叶证书并计算 SHA256，
+与 `xray tls ping` 输出一致，但支持任意端口且零外部依赖（Win7 亦可）。
+*/
+import wsock.tcp.client;
+import crypt;
+
+namespace xray.certPin;
+
+_be16 = function(n){ return ..string.pack(n>>8 & 0xFF, n & 0xFF); };
+_be24 = function(n){ return ..string.pack(n>>16 & 0xFF, n>>8 & 0xFF, n & 0xFF); };
+_ext = function(t,data){ return _be16(t) ++ _be16(#data) ++ data; };
+_u16list = function(arr){
+	var s = "";
+	for(i=1;#arr;1){ s ++= _be16(arr[i]); }
+	return _be16(#s) ++ s;
+};
+
+//构造 TLS 1.2 ClientHello
+makeClientHello = function(sni){
+	var sniBytes = sni;
+	var random = "";
+	for(i=1;32;1){ random ++= ..string.pack(..math.random(0,255)); }
+
+	var suites = _u16list({0xC02F;0xC02B;0xC030;0xC02C;0xCCA8;0xCCA9;0x009E;0x009C;
+		0xC013;0xC014;0xC009;0xC00A;0x002F;0x0035;0x000A});
+
+	var exts = _ext(0x0000, _be16(#sniBytes+3) ++ ..string.pack(0) ++ _be16(#sniBytes) ++ sniBytes)
+		++ _ext(0x000A, _u16list({0x001D;0x0017;0x0018;0x0019}))
+		++ _ext(0x000B, ..string.pack(1,0))
+		++ _ext(0x000D, _u16list({0x0403;0x0503;0x0603;0x0804;0x0805;0x0806;0x0401;0x0501;0x0201;0x0203}))
+		++ _ext(0x0017, "")
+		++ _ext(0x0023, "")
+		++ _ext(0xFF01, ..string.pack(0));
+
+	var body = _be16(0x0303) ++ random ++ ..string.pack(0)
+		++ _be16(#suites) ++ suites ++ ..string.pack(1, 0)
+		++ _be16(#exts) ++ exts;
+
+	return ..string.pack(22) ++ _be16(0x0301) ++ _be16(#body+4) ++ ..string.pack(1) ++ _be24(#body) ++ body;
+};
+
+/*
+获取远程 TLS 叶证书 SHA256（小写十六进制）
+@address 连接地址（IP 或域名）
+@port    端口，默认 443
+@sni     TLS SNI，默认为 address
+@timeout 超时毫秒，默认 6000
+成功返回 sha256 字符串；失败返回 null,错误信息
+*/
+getSha256 = function(address,port,sni,timeout){
+	if(!address) return null,"未指定地址";
+	port = port : 443;
+	sni = sni : address;
+	timeout = timeout : 6000;
+
+	var sock = ..wsock.tcp.client();
+	var ok = sock.connectTimeout(address,port,timeout/1000);
+	if(!ok){
+		sock.close();
+		return null,"连接失败";
+	}
+	sock.setTimeouts(timeout,timeout);
+	sock.send(makeClientHello(sni));
+
+	var buf = "";
+	var cert,alertInfo = null,null;
+	var deadline = ..time.tick() + timeout;
+	while(..time.tick() < deadline){
+		var chunk = sock.recv(16384);
+		if(!chunk){ break; }
+		buf ++= chunk;
+
+		var pos = 1;
+		while(pos + 4 <= #buf){
+			var ct = buf[pos];
+			var len = buf[pos+3]*256 + buf[pos+4];
+			if(pos + 4 + len > #buf){ break; }
+			if(ct == 21){
+				alertInfo = "alert " + buf[pos+5] + "/" + buf[pos+6];
+			}
+			elseif(ct == 22){
+				var hsPos = pos + 5;
+				var hsEnd = pos + 4 + len;
+				while(hsPos + 3 <= hsEnd){
+					var htype = buf[hsPos];
+					var hlen = buf[hsPos+1]*65536 + buf[hsPos+2]*256 + buf[hsPos+3];
+					var msgEnd = hsPos + 3 + hlen;
+					if(msgEnd > hsEnd){ break; }
+					if(htype == 11){
+						var d = hsPos + 4;
+						var certLen = buf[d+3]*65536 + buf[d+4]*256 + buf[d+5];
+						cert = ..string.slice(buf,d+6,d+6+certLen-1);
+						break;
+					}
+					hsPos = msgEnd + 1;
+				}
+			}
+			if(cert){ break; }
+			pos = pos + 5 + len;
+		}
+		if(cert){ break; }
+	}
+	sock.close();
+
+	if(!cert){ return null,"未获取到证书" + (alertInfo ? "("+alertInfo+")" : ""); }
+	return ..string.lower(..crypt.sha256(cert));
+};
+
+//节点是否需要证书指纹（对应原 allowInsecure 的使用场景）
+needsPin = function(outbound){
+	if(!outbound) return false;
+	if(outbound.pinnedPeerCertSha256) return false;
+	if(!outbound.allowInsecure) return false;
+	return (outbound.tls === "tls") || (outbound.tls === "xtls");
+};
+
+/*
+为节点解析并写入证书指纹
+@outbound 节点对象（需要 address / port，可选 sni）
+@force    为 true 时忽略已有指纹强制刷新
+成功返回 sha256；失败返回 null,错误信息
+*/
+resolve = function(outbound,force){
+	if(!outbound || !outbound.address) return null,"无效节点";
+	if(outbound.pinnedPeerCertSha256 && !force){
+		return outbound.pinnedPeerCertSha256;
+	}
+
+	var sni = outbound.sni;
+	if(!sni || !#sni) sni = outbound.address;
+
+	var sha,err = getSha256(outbound.address,outbound.port,sni);
+	if(!sha){ return null,err; }
+
+	outbound.pinnedPeerCertSha256 = sha;
+	return sha;
+};
+
+/**intellisense(xray.certPin)
+getSha256(.(address,port,sni,timeout) = 获取远程 TLS 叶证书 SHA256（小写十六进制）\n参数：连接地址、端口(默认443)、SNI(默认同地址)、超时毫秒(默认6000)\n成功返回 sha256 字符串，失败返回 null,错误信息
+needsPin(.(outbound) = 节点是否需要证书指纹（原 allowInsecure 场景）
+resolve(.(outbound,force) = 为节点解析并写入 pinnedPeerCertSha256\n成功返回 sha256，失败返回 null,错误信息
+end intellisense**/

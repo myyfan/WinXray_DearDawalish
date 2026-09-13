@@ -3019,6 +3019,99 @@ if(#config.proxy.outbounds){
 }
 
 
+// ===== 后台批量获取服务器证书指纹 =====
+// Xray 26.x 已移除 allowInsecure（2026-06-01 起为硬错误），
+// 原「跳过证书校验」的节点必须改用 pinnedPeerCertSha256 才能连接。
+// 在后台线程分片抓取（不阻塞界面），抓到后写回配置并保存。
+frmXray.startCertPinFetch = function(){
+	if(frmXray.certPinRunning) return;
+
+	var jobs = ..table.array();
+	for(k,v in ..config.proxy.outbounds){
+		if( v.allowInsecure && !v.pinnedPeerCertSha256 && v.address ){
+			if( (v.certPinFailCount : 0) > 0 ) continue; // 抓取失败过的不再自动重试
+			..table.push(jobs,{index=k;address=v.address;port=v.port : 443;sni=v.sni});
+		}
+	}
+	if(!#jobs) return;
+
+	frmXray.certPinRunning = true;
+	frmXray.certPinTotal = #jobs;
+	frmXray.certPinDoneCount = 0;
+	frmXray.edit.print("开始后台获取服务器证书指纹，共 " + #jobs + " 个节点 ...");
+
+	var THREADS = 12;
+	var chunkSize = ..math.ceil(#jobs / THREADS);
+	var taskCount = 0;
+	for(t=1;THREADS;1){
+		var startPos = (t-1)*chunkSize + 1;
+		if(startPos > #jobs) break;
+		var stopPos = ..math.min(t*chunkSize,#jobs);
+		taskCount++;
+		..thread.set("certPinDone_" + t,false);
+		..thread.invoke(
+			function(chunk,tid){
+				import xray.certPin;
+				var results = {};
+				for(i=1;#chunk;1){
+					var j = chunk[i];
+					var sha = xray.certPin.getSha256(j.address,j.port,j.sni,4000);
+					results[i] = {index=j.index;sha=sha};
+				}
+				thread.set("certPinResult_" + tid,results);
+				thread.set("certPinDone_" + tid,true);
+			},..table.slice(jobs,startPos,stopPos),t
+		);
+	}
+	frmXray.certPinTaskCount = taskCount;
+
+	frmXray.pollCertPin = function(){
+		var allDone = true;
+		for(t=1;frmXray.certPinTaskCount;1){
+			var st = ..thread.get("certPinDone_" + t);
+			if(st === "processed") continue;
+			if(st === true){
+				var r = ..thread.get("certPinResult_" + t);
+				if(r){
+					for(i=1;#r;1){
+						var item = r[i];
+						var ob = ..config.proxy.outbounds[item.index];
+						if(!ob) continue;
+						if(item.sha) ob.pinnedPeerCertSha256 = item.sha;
+						else ob.certPinFailCount = (ob.certPinFailCount : 0) + 1;
+					}
+					frmXray.certPinDoneCount += #r;
+					..config.proxy.save();
+				}
+				..thread.set("certPinResult_" + t,null);
+				..thread.set("certPinDone_" + t,"processed");
+			}
+			else {
+				allDone = false;
+			}
+		}
+
+		frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal);
+
+		if(allDone){
+			frmXray.certPinRunning = false;
+			frmXray.edit.print("后台证书指纹获取完成。");
+		}
+		else {
+			frmXray.setTimeout(frmXray.pollCertPin,1000);
+		}
+	};
+
+	frmXray.setTimeout(frmXray.pollCertPin,1000);
+};
+
+// 启动后延迟 6 秒开始（避开内核启动），完全在后台执行不阻塞界面
+frmXray.setTimeout(
+	function(){
+		frmXray.startCertPinFetch();
+	},6000
+);
+
 // 订阅代理切换消息，设置3个单选控件
 subscribe("sysProxy.modeChanged",function(mode){
 	frmXray.radioProxyPac.checked = false;

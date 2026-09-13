@@ -185,6 +185,10 @@ restart = function(editor,outbound){
 	if( ! prcsxray ){ 
 		import xray.core.configJson;
 		// 生成xray的config.json文件
+		// Xray 26.x 已移除 allowInsecure（成为硬错误），自签证书节点需改用 pinnedPeerCertSha256。
+		// 证书指纹统一由后台任务抓取（frmXray.startCertPinFetch），此处不做同步网络等待，
+		// 以免启动或切换内核时阻塞界面。
+		
 		var jsonPath,err = ..xray.core.configJson.write(
 			..io.joinpath(..io.splitpath(corePath).dir,"config.json")
 			,outbound,socksProxyPort,httpProxPort,searcherSocksProxyPorts,searcherHttpProxyPorts);

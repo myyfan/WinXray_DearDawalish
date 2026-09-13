@@ -1808,7 +1808,7 @@ frmXray.btnChangeServer.oncommand=function(){
 		//debug.log.print("手动切换服务器,currentOutboundIndex为:"+currentOutboundIndex);
 		//frmXray.chkAutoTest.checked=false;
 		//frmXray.chkSearchMode.checked=false;
-		frmXray.chkAutoTest.checked = false;
+	//	frmXray.chkAutoTest.checked = false;
 		//config.proxy.searchMode = false;		
 		isManualSwitch = true;
 		frmXray.edit.print("手动更换服务器"); 

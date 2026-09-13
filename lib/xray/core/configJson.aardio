@@ -99,13 +99,13 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 				network=outbound.network : "tcp";
 				security=#outbound.tls ? outbound.tls : null;
 				tlsSettings = (#outbound.tls && outbound.tls != "xtls") ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni : outbound.address;
 					alpn = outbound.alpn;
 					disableSessionResumption = outbound.disableSessionResumption;
 				} : null;
 				xtlsSettings = outbound.tls == "xtls" ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni : outbound.address;
 					alpn = outbound.alpn;
 					disableSessionResumption = outbound.disableSessionResumption;
@@ -228,9 +228,9 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 			streamSettings={
 				network=outbound.network : "tcp";
 				security=#outbound.tls ? outbound.tls : null;
-				// !!outbound.allowInsecure表示将该属性转换为布尔值
+				// Xray 26.x 已移除 allowInsecure（2026-06-01 起为硬错误），改用证书指纹/名称校验
 				tlsSettings = #outbound.tls ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni;
 				} : null
 			};
@@ -348,7 +348,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 				security = #outbound.tls ? outbound.tls : "tls";  
 				
 				tlsSettings =  (outbound.tls === "tls") ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni;
 				} : null
 			};
@@ -400,7 +400,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 		
 		..table.assign(proxyOutboundInCore,ob); 
 	} 
-	elseif(outbound.protocol=="socks"){
+	elseif(outbound.protocol=="socks" || outbound.protocol=="socks5"){
 		
 		var ob = {
 			mux = (outbound.concurrency !== null) ? {
@@ -425,20 +425,23 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 			tag="proxy"
 		};
 			
-		if(#outbound.id){
-			var user,password = ..string.match(outbound.id,"([^\:]+)\:(.+)");
-			if(user && password){
-				ob.settings.servers[1].users = {
-					user = user;
-					password = password;
-					level = outbound.level : 0;
-				}
+		if(outbound.username || #outbound.id){
+			// Xray 26.x 要求 users 必须是数组（写成对象会报 cannot unmarshal object）
+			// 认证信息优先取节点独立的 username/password 字段，其次兼容 "user:pass" 写法
+			var user = outbound.username;
+			var password = outbound.password : outbound.id;
+			if(!user){
+				var u,p = ..string.match(outbound.id,"([^\:]+)\:(.+)");
+				if(u && p){ user,password = u,p; }
 			}
-			else{
+			if(user){
 				ob.settings.servers[1].users = {
-					user = outbound.id; 
-					level = outbound.level : 0;
-				}
+					{
+						user = user;
+						password = password;
+						level = outbound.level : 0;
+					}
+				};
 			}
 		}
 		
@@ -459,30 +462,61 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 			streamSettings={
 				security = outbound.protocol=="https"  ? "tls" : "none";  
 				tlsSettings = (outbound.protocol=="https") ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 				} : null;
 			};
 			tag="proxy"
 		};
 			
-		if(#outbound.id){
-			var user,password = ..string.match(outbound.id,"([^\:]+)\:(.+)");
-			if(user && password){
-				ob.settings.servers[1].users = {
-					user = user;
-					password = password; 
-				}
+		if(outbound.username || #outbound.id){
+			// Xray 26.x 要求 users 必须是数组（写成对象会报 cannot unmarshal object）
+			// 认证信息优先取节点独立的 username/password 字段，其次兼容 "user:pass" 写法
+			var user = outbound.username;
+			var password = outbound.password : outbound.id;
+			if(!user){
+				var u,p = ..string.match(outbound.id,"([^\:]+)\:(.+)");
+				if(u && p){ user,password = u,p; }
 			}
-			else{
+			if(user){
 				ob.settings.servers[1].users = {
-					user = outbound.id;  
-				}
+					{
+						user = user;
+						password = password;
+					}
+				};
 			}
 		}
 		
 		..table.assign(proxyOutboundInCore,ob); 
 	} 
 
+	elseif(outbound.protocol=="hysteria2" || outbound.protocol=="hysteria"){
+		// Xray 26.x 原生支持 Hysteria2：协议名必须写 "hysteria"，且 version 必须为 2。
+		// 协议层只放 address/port，认证等参数放在 streamSettings.hysteriaSettings（官方要求）。
+		var ob = {
+			protocol="hysteria";
+			settings={
+				version=2;
+				address=outbound.address;
+				port=tonumber(outbound.port);
+			};
+			streamSettings={
+				network="hysteria";
+				security="tls";
+				tlsSettings={
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
+					serverName = outbound.sni : outbound.address;
+				};
+				hysteriaSettings={
+					version=2;
+					auth=outbound.id;
+				};
+			};
+			tag="proxy"
+		};
+
+		..table.assign(proxyOutboundInCore,ob);
+	}
 	// === 多出口服务器并行搜索：生成 N 个搜索器槽位（入站 + 路由规则） ===
 	if(..table.isArrayLike(searcherSocksPorts) && ..table.isArrayLike(searcherHttpPorts) && #searcherSocksPorts && #searcherHttpPorts){
 		var nSlots = (#searcherSocksPorts < #searcherHttpPorts) ? #searcherSocksPorts : #searcherHttpPorts;
@@ -660,13 +694,13 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 				network=outbound.network : "tcp";
 				security=#outbound.tls ? outbound.tls : null;
 				tlsSettings = (#outbound.tls && outbound.tls != "xtls") ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni : outbound.address;
 					alpn = outbound.alpn;
 					disableSessionResumption = outbound.disableSessionResumption;
 				} : null;
 				xtlsSettings = outbound.tls == "xtls" ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni : outbound.address;
 					alpn = outbound.alpn;
 					disableSessionResumption = outbound.disableSessionResumption;
@@ -792,12 +826,12 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 security=#outbound.tls ? outbound.tls : null;
 */
 				security=outbound.tls ? outbound.tls : null;
-				// !!outbound.allowInsecure表示将该属性转换为布尔值
+				// Xray 26.x 已移除 allowInsecure（2026-06-01 起为硬错误），改用证书指纹/名称校验
 /*
 				tlsSettings = #outbound.tls ? {
 */
 				tlsSettings = outbound.tls ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni;
 				} : null
 			};
@@ -915,7 +949,7 @@ security=#outbound.tls ? outbound.tls : null;
 				security = #outbound.tls ? outbound.tls : "tls";  
 				
 				tlsSettings =  (outbound.tls === "tls") ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 					serverName = outbound.sni;
 				} : null
 			};
@@ -967,7 +1001,7 @@ security=#outbound.tls ? outbound.tls : null;
 		
 		..table.assign(proxyOutboundInCore,ob); 
 	} 
-	elseif(outbound.protocol=="socks"){
+	elseif(outbound.protocol=="socks" || outbound.protocol=="socks5"){
 		
 		var ob = {
 			mux = (outbound.concurrency !== null) ? {
@@ -992,20 +1026,23 @@ security=#outbound.tls ? outbound.tls : null;
 			tag=proxyTag
 		};
 			
-		if(#outbound.id){
-			var user,password = ..string.match(outbound.id,"([^\:]+)\:(.+)");
-			if(user && password){
-				ob.settings.servers[1].users = {
-					user = user;
-					password = password;
-					level = outbound.level : 0;
-				}
+		if(outbound.username || #outbound.id){
+			// Xray 26.x 要求 users 必须是数组（写成对象会报 cannot unmarshal object）
+			// 认证信息优先取节点独立的 username/password 字段，其次兼容 "user:pass" 写法
+			var user = outbound.username;
+			var password = outbound.password : outbound.id;
+			if(!user){
+				var u,p = ..string.match(outbound.id,"([^\:]+)\:(.+)");
+				if(u && p){ user,password = u,p; }
 			}
-			else{
+			if(user){
 				ob.settings.servers[1].users = {
-					user = outbound.id; 
-					level = outbound.level : 0;
-				}
+					{
+						user = user;
+						password = password;
+						level = outbound.level : 0;
+					}
+				};
 			}
 		}
 		
@@ -1026,30 +1063,61 @@ security=#outbound.tls ? outbound.tls : null;
 			streamSettings={
 				security = outbound.protocol=="https"  ? "tls" : "none";  
 				tlsSettings = (outbound.protocol=="https") ? {
-					allowInsecure = !!outbound.allowInsecure;
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
 				} : null;
 			};
 			tag=proxyTag
 		};
 			
-		if(#outbound.id){
-			var user,password = ..string.match(outbound.id,"([^\:]+)\:(.+)");
-			if(user && password){
-				ob.settings.servers[1].users = {
-					user = user;
-					password = password; 
-				}
+		if(outbound.username || #outbound.id){
+			// Xray 26.x 要求 users 必须是数组（写成对象会报 cannot unmarshal object）
+			// 认证信息优先取节点独立的 username/password 字段，其次兼容 "user:pass" 写法
+			var user = outbound.username;
+			var password = outbound.password : outbound.id;
+			if(!user){
+				var u,p = ..string.match(outbound.id,"([^\:]+)\:(.+)");
+				if(u && p){ user,password = u,p; }
 			}
-			else{
+			if(user){
 				ob.settings.servers[1].users = {
-					user = outbound.id;  
-				}
+					{
+						user = user;
+						password = password;
+					}
+				};
 			}
 		}
 		
 		..table.assign(proxyOutboundInCore,ob); 
 	} 
 	
+	elseif(outbound.protocol=="hysteria2" || outbound.protocol=="hysteria"){
+		// Xray 26.x 原生支持 Hysteria2：协议名必须写 "hysteria"，且 version 必须为 2。
+		// 协议层只放 address/port，认证等参数放在 streamSettings.hysteriaSettings（官方要求）。
+		var ob = {
+			protocol="hysteria";
+			settings={
+				version=2;
+				address=outbound.address;
+				port=tonumber(outbound.port);
+			};
+			streamSettings={
+				network="hysteria";
+				security="tls";
+				tlsSettings={
+					pinnedPeerCertSha256 = outbound.pinnedPeerCertSha256; verifyPeerCertByName = outbound.verifyPeerCertByName;
+					serverName = outbound.sni : outbound.address;
+				};
+				hysteriaSettings={
+					version=2;
+					auth=outbound.id;
+				};
+			};
+			tag=proxyTag
+		};
+
+		..table.assign(proxyOutboundInCore,ob);
+	}
 	//console.dump(currentCore.outbounds);
 	..string.save(jsonPath,..web.json.stringify(currentCore) );
 	return jsonPath;

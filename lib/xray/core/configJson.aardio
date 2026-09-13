@@ -6,7 +6,7 @@ import crypt;
 
 namespace xray.core.configJson;
 	
-write  = function(jsonPath,outbound,sockPort,httpPort){
+write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searcherHttpPorts){
 	/*
 	以config.core.default为模板，并根据节点信息修改参数，生成最终代理节点配置
 	*/
@@ -482,6 +482,86 @@ write  = function(jsonPath,outbound,sockPort,httpPort){
 		
 		..table.assign(proxyOutboundInCore,ob); 
 	} 
+
+	// === 多出口服务器并行搜索：生成 N 个搜索器槽位（入站 + 路由规则） ===
+	if(..table.isArrayLike(searcherSocksPorts) && ..table.isArrayLike(searcherHttpPorts) && #searcherSocksPorts && #searcherHttpPorts){
+		var nSlots = (#searcherSocksPorts < #searcherHttpPorts) ? #searcherSocksPorts : #searcherHttpPorts;
+		
+		// 确保 routing.rules 存在
+		if(!currentCore.routing) currentCore.routing = {};
+		if(!..table.isArrayLike(currentCore.routing[["rules"]])) currentCore.routing[["rules"]] = ..table.array();
+		
+		// 1. 移除旧的单搜索器入站
+		var cleanInbounds = ..table.array();
+		for(k,ib in currentCore.inbounds){
+			if(ib.tag == "proxySearcher" || ib.tag == "http_proxySearcher"){
+				continue;
+			}
+			..table.push(cleanInbounds, ib);
+		}
+		currentCore.inbounds = cleanInbounds;
+		
+		// 2. 移除旧的搜索器路由规则
+		var cleanRules = ..table.array();
+		for(k,r in currentCore.routing[["rules"]]){
+			var isSearcherRule = false;
+			if(r.outboundTag == "proxySearcher"){
+				isSearcherRule = true;
+			}
+			elseif(..table.isArrayLike(r.inboundTag)){
+				for(m,t in r.inboundTag){
+					if(t == "proxySearcher" || t == "http_proxySearcher"){
+						isSearcherRule = true;
+						break;
+					}
+				}
+			}
+			if(isSearcherRule) continue;
+			..table.push(cleanRules, r);
+		}
+		currentCore.routing[["rules"]] = cleanRules;
+		
+		// 3. 生成 N 个搜索器入站 + N 条路由规则
+		for(i=1;nSlots;1){
+			..table.push(currentCore.inbounds, {
+				listen = "0.0.0.0";
+				port = searcherSocksPorts[i];
+				protocol = "socks";
+				tag = "proxySearcher_" + i;
+				settings = {
+					auth = "noauth";
+					udp = true;
+				};
+				sniffing = {
+					destOverride = {"http";"tls"};
+					enabled = true;
+				};
+			});
+			..table.push(currentCore.inbounds, {
+				listen = "0.0.0.0";
+				port = searcherHttpPorts[i];
+				protocol = "http";
+				tag = "http_proxySearcher_" + i;
+				settings = {};
+				sniffing = {
+					destOverride = {"http";"tls"};
+					enabled = true;
+				};
+			});
+			// 插入到 rules 最前面：Xray 按顺序匹配路由规则，必须保证搜索器流量优先命中对应槽位出站，
+			// 否则会被前面默认规则（如 domain→proxy）抢先导向默认出站。
+			..table.insert(currentCore.routing[["rules"]], {
+				inboundTag = {"proxySearcher_" + i; "http_proxySearcher_" + i};
+				outboundTag = "proxySearcher_" + i;
+				type = "field";
+			}, 1);
+		}
+	}
+
+	// Xray 26.x（新版本）已移除 legacy reverse 功能（迁移到 VLESS Reverse Proxy），
+	// 旧配置模板与持久化配置中的 reverse 字段会导致内核启动失败，
+	// 因此在这里统一删除，确保新老配置都能被新内核接受。
+	currentCore.reverse = null;
 
 	..string.save(jsonPath,..web.json.stringify(currentCore) );
 	return jsonPath;

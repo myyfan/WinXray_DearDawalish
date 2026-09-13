@@ -44,6 +44,11 @@ if(!config.proxy.maxTestServers){
 	config.proxy.maxTestServers = 100;
 }
 
+// 后台搜索模式并发测试的服务器数量（同时给 Xray 配置多个出口 + 多个搜索入站端口）
+if(!config.proxy.searchBatchSize){
+	config.proxy.searchBatchSize = 10;
+}
+
 if(config.subscribe.autoRefreshSubscription === null){
 	config.subscribe.autoRefreshSubscription = false;
 }
@@ -202,9 +207,6 @@ config.__resetDefaultCore = function(){
             "statsOutboundDownlink":true,
             "statsOutboundUplink":true
         }
-    },
-    "reverse":{
-
     },
     "routing":{
         "domainStrategy":"IPOnDemand",

@@ -59,84 +59,33 @@ start = function(){
     //debug.log.print("流量监控1")
 					
 	if(coreType=="xray"){
-		//debug.log.print("流量监控2")
-
-		var downTraffic = ..win.invoke(
+		//合并调用：一次 statsquery 用前缀 pattern 同时取回 uplink + downlink（节省约 50% 的进程开销）
+		//并取消原来的 uplink 重试循环（下行已成功则上行失败无需重试）
+		var downTraffic,upTraffic = ..win.invoke(
 			function(corePath,apiPort){
-				import debug
-				import debug.log
-				import console
-				
-				//import config
-
 				import process.popen;
 				import web.json;
-				var cmdText = '"outbound>>>proxy>>>traffic>>>downlink"';
-		//		prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:10084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:10084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
-			
-				import xray.core;
 
-				//var inbounds = ..config.core.default[["inbounds"]];
-				//var apiPort = inbounds[3].port;
-				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:'+ apiPort,"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:10084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
-				//console.dumpTable(prcsCmd)
+				var cmdText = '"outbound>>>proxy>>>traffic>>>"';
+				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:'+ apiPort,"-pattern",cmdText,"-reset");
+
 				var json = ..web.json.tryParse(prcsCmd.read(-1));
+				var down,up = 0,0;
 
-				a=json.stat[1]
-			//console.dumpTable(a)
-		/*
-	b=a.name
-*/
-			c=a.value
-/*
-			console.log(type(a),type(b),type(c))
-			console.log(b,c)
-*/
-
-				//console.log(json.stat.value)
-				var value = (json.stat[1] && json.stat[1].value) ? json.stat.value : false;
-				var value = c;
-		//debug.log.print("流量监控4")
-				return value;
+				var stat = json ? json.stat : null;
+				if(stat){
+					for(i=1;#stat;1){
+						var item = stat[i];
+						if(item){
+							if(..string.find(item.name,"downlink")){ down = (tonumber(item.value) : 0) }
+							elseif(..string.find(item.name,"uplink")){ up = (tonumber(item.value) : 0) }
+						}
+					}
+				}
+				return down,up;
 			},corePath,apiPort
 		)
-
-		var upTraffic = ..win.invoke(
-			function(corePath,apiPort){
-				//import config
-				import process.popen;
-				import web.json;
-				var cmdText = '"outbound>>>proxy>>>traffic>>>uplink"';
-				var json ;
-				var i = 3 ; 
-				do {
-			//		prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:10084',"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:10084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
-					import xray.core;
-
-					//var inbounds = ..config.core.default[["inbounds"]];
-					//var apiPort = inbounds[3].port;
-					prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:'+ apiPort,"-pattern",cmdText,"-reset");//xray api statsquery -s 127.0.0.1:10084 -pattern "outbound>>>proxy>>>traffic>>>downlink" -reset
-					json = ..web.json.tryParse(prcsCmd.read(-1));
-					i--;
-				}while( !json && i > 0)
-				
-				
-				import console
-				import debug
-				//console.dumpTable(json.stat)
-				a=json.stat[1]
-			//console.dumpTable(a)
-			//b=a.name
-			c=a.value
-			//console.log(type(a),type(b),type(c))
-			//console.log(b,c)
-			
-				//var value = (json.stat[1] && json.stat[1].value) ? json.stat[1].value : false;
-				var value = c
-				return value;
-			},corePath,apiPort
-		)
-		return downTraffic,upTraffic; 
+		return downTraffic,upTraffic;
 	}
 	elseif(coreType=="v2ray"){
 				debug.log.print("流量监控3")

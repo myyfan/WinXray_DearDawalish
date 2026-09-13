@@ -13,6 +13,10 @@ httpProxPort = null;
 apiPort = null;
 searcherSocksProxyPort = null;
 searcherHttpProxyPort = null;
+// 多出口并行搜索：N 个搜索器入站端口数组 + 并发数
+searcherSocksProxyPorts = null;
+searcherHttpProxyPorts = null;
+searchBatchSize = null;
 // 获取系统代理配置
 getSystemProxyConfig = function(){
     if(!(socksProxyPort&&httpProxPort)){ return null; }//有设置代理就什么也不做，没有就返回null
@@ -98,6 +102,27 @@ restart = function(editor,outbound){
 	apiPort = inbounds[3].port;
 	searcherSocksProxyPort = inbounds[4].port;
 	searcherHttpProxyPort = inbounds[5].port;
+	
+	// === 多出口并行搜索：生成 N 个搜索器入站端口 ===
+	// 并发数来自配置项 config.proxy.searchBatchSize（可在「高级配置」界面用滑尺调整）
+	// 注意：aardio 中 null 参与 > 比较或 math.floor 都会报错，必须先判空归一化
+	var batchSize = tonumber(..config.proxy.searchBatchSize);
+	if(!batchSize || batchSize < 1) batchSize = 10;
+	if(batchSize > 50) batchSize = 50;
+	batchSize = ..math.floor(batchSize);
+	self.searchBatchSize = batchSize;
+	
+	searcherSocksProxyPort = tonumber(searcherSocksProxyPort) : 10091;
+	searcherHttpProxyPort = tonumber(searcherHttpProxyPort) : 10092;
+	
+	searcherSocksProxyPorts = ..table.array();
+	searcherHttpProxyPorts = ..table.array();
+	for(i=1;batchSize;1){
+		searcherSocksProxyPorts[i] = ..wsock.tcp.server.getFreePort("127.0.0.1", searcherSocksProxyPort + (i-1)*2);
+		searcherHttpProxyPorts[i] = ..wsock.tcp.server.getFreePort("127.0.0.1", searcherHttpProxyPort + (i-1)*2);
+	}
+	searcherSocksProxyPort = searcherSocksProxyPorts[1];
+	searcherHttpProxyPort = searcherHttpProxyPorts[1];
 /*
 	console.dump(socksProxyPort)
 	console.dump(httpProxPort)
@@ -162,7 +187,7 @@ restart = function(editor,outbound){
 		// 生成xray的config.json文件
 		var jsonPath,err = ..xray.core.configJson.write(
 			..io.joinpath(..io.splitpath(corePath).dir,"config.json")
-			,outbound,socksProxyPort,httpProxPort);
+			,outbound,socksProxyPort,httpProxPort,searcherSocksProxyPorts,searcherHttpProxyPorts);
 	
 		if(!jsonPath){
 			if( nexCore ){ nexCore.stop(); } 
@@ -408,8 +433,38 @@ var getxrayCoreUrl = function(){
 		}		
 		if(!tag) return;
 		
-		return "https://github.com/XTLS/Xray-core/releases/download/" 
-			+ tag + "/xray-windows-" +	(..process().isWow64() ? "64" : "32") + ".zip",tag	
+		// 新版 Xray 资产命名已变更（如 Xray-windows-64.zip 大写 X、Xray-win7-64.zip Win7 兼容版），
+		// 旧代码硬编码小写 "xray-windows-64.zip" 会 404，因此改为从 assets 中自动查找。
+		var url;
+		var archSuffix = ..process().isWow64() ? "-64.zip" : "-32.zip";
+		
+		// 第一优先：Win7 兼容版（官方 patched go 构建，兼容 Win7 及更高版本系统）
+		for(i,asset in v['assets']){
+			var assetName = tostring(asset['name']);
+			if(..string.find(assetName, "win7" ++ archSuffix)){
+				url = asset['browser_download_url'];
+				break;
+			}
+		}
+		
+		// 第二优先：标准版
+		if(!url){
+			for(i,asset in v['assets']){
+				var assetName = tostring(asset['name']);
+				if(..string.find(assetName, archSuffix) && !..string.find(assetName, "win7")){
+					url = asset['browser_download_url'];
+					break;
+				}
+			}
+		}
+		
+		// 兜底：沿用旧命名规则
+		if(!url){
+			url = "https://github.com/XTLS/Xray-core/releases/download/" 
+				+ tag + "/xray-windows-" +	(..process().isWow64() ? "64" : "32") + ".zip";
+		}
+		
+		return url,tag	
 	});
 	form.close();
     

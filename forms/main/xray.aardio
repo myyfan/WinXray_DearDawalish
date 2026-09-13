@@ -6,21 +6,21 @@ import win.ui;
 import fonts.fontAwesome;
 //namespace xray
 /*DSG{{*/
-frmXray = win.form(text="WinXray ";right=959;bottom=591;bgcolor=16777215)
+frmXray = win.form(text="WinXray ";right=959;bottom=591;bgcolor=0xFFFFFF)
 frmXray.add(
-btnChangeServer={cls="plus";text="手动换服";left=872;top=366;right=945;bottom=398;align="left";bgcolor=11580047;border={radius=4};db=1;dr=1;font=LOGFONT(h=-13);notify=1;textPadding={left=6};z=10};
+btnChangeServer={cls="plus";text="手动换服";left=872;top=366;right=945;bottom=398;align="left";bgcolor=0xB0B28F;border={radius=4};db=1;dr=1;font=LOGFONT(h=-13);notify=1;textPadding={left=6};z=10};
 btnEditPacOrUwp={cls="plus";text="编辑PAC";left=308;top=361;right=414;bottom=376;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF1C4';notify=1;textPadding={left=30};z=7};
 btnImportServerFromClipBd={cls="plus";text="批量导入链接";left=308;top=382;right=441;bottom=399;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF196 ';notify=1;textPadding={left=30};z=8};
-btnTcping={cls="plus";text="检测并连接最快服务器";left=674;top=366;right=868;bottom=398;align="left";bgcolor=11580047;border={radius=4};db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=18}};iconText='\uF012';notify=1;textPadding={left=42};z=3};
+btnTcping={cls="plus";text="检测并连接最快服务器";left=674;top=366;right=868;bottom=398;align="left";bgcolor=0xB0B28F;border={radius=4};db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=18}};iconText='\uF012';notify=1;textPadding={left=42};z=3};
 chkAutoTest={cls="plus";text="异常自动重连 ";left=432;top=387;right=557;bottom=401;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF0C8';notify=1;textPadding={left=30};z=9};
 chkJustValid={cls="checkbox";text="仅连接已测通";left=434;top=381;right=527;bottom=395;z=13};
 chkSearchMode={cls="checkbox";text="开启后台搜索";left=548;top=380;right=643;bottom=394;z=11};
 chkValidNoSearch={cls="checkbox";text="已测通不搜索";left=547;top=402;right=644;bottom=416;z=12};
-edit={cls="edit";left=7;top=404;right=954;bottom=584;autohscroll=false;bgcolor=0;color=16777215;db=1;dl=1;dr=1;edge=1;multiline=1;vscroll=1;z=2};
+edit={cls="edit";left=7;top=404;right=954;bottom=584;autohscroll=false;bgcolor=0x000000;color=0xFFFFFF;db=1;dl=1;dr=1;edge=1;multiline=1;vscroll=1;z=2};
 listview={cls="listview";left=4;top=5;right=954;bottom=358;db=1;dl=1;dr=1;dt=1;edge=1;fullRow=1;gridLines=1;z=1};
-radioProxy={cls="radiobutton";text="全局代理";left=115;top=367;right=194;bottom=397;bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-13);z=4};
-radioProxyDirect={cls="radiobutton";text="不使用代理";left=8;top=367;right=108;bottom=397;bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-13);z=6};
-radioProxyPac={cls="radiobutton";text="PAC代理";left=206;top=367;right=280;bottom=397;bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-13);z=5}
+radioProxy={cls="radiobutton";text="全局代理";left=115;top=367;right=194;bottom=397;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);z=4};
+radioProxyDirect={cls="radiobutton";text="不使用代理";left=8;top=367;right=108;bottom=397;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);z=6};
+radioProxyPac={cls="radiobutton";text="PAC代理";left=206;top=367;right=280;bottom=397;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);z=5}
 )
 /*}}*/
 
@@ -2886,7 +2886,7 @@ subscribe("uiCommand.restartxrayCore",function(){
 		//console.dump(outbounds[i].failedCount);
 		//sleep(100);
 	//	if(#outbounds < 51 ) {break;}
-		if(type(outbounds[i])!="table" || ( outbounds[i].failedCount &&  outbounds[i].failedCount > 4 ) ){
+		if(type(outbounds[i])!="table" || ( outbounds[i].failedCount &&  outbounds[i].failedCount > 10 ) ){
 			if(outbounds[i].ps == "已测通" ){
 				if(outbounds[i].failedCount &&  outbounds[i].failedCount > 100){
 					outbounds[i].ps =null;
@@ -3203,44 +3203,73 @@ import thread.works;
 
 
 
-// 搜索线程池（单例，顺序执行）
-var searcherPool = thread.works(5, function(taskData) {
+// === 搜索线程池：按需动态创建 / 销毁 ===
+// thread.works 的线程数在创建时固定，但可随时销毁后重建（无需重启软件或内核）。
+// 勾选"开启后台搜索"时按内核实际搜索器槽位数创建，取消勾选时销毁以释放线程与内存。
+frmXray.searcherPool = null;
+frmXray.searcherPoolSize = 0;
+
+// 线程池并发数上限（与「高级配置 - 后台搜索并发数」滑尺上限保持一致）
+var SEARCHER_POOL_MAX = 50;
+
+// 搜索任务工作函数（定义一次，供线程池复用）
+frmXray.searcherWorker = function(taskData) {
 	import web.rest.client;
 	import debug.log;
-	
-	debug.log.print("searcherPool 开始运行前")
-	
-    var frmXray              = taskData.frmXray;
-    var outbound             = taskData.outbound;
-    var outboundIndex        = taskData.outboundIndex;
-  //  var outbounds            = taskData.outbounds;
-    var searcherHttpProxyPort = taskData.searcherHttpProxyPort;
-    // 注意：原代码还有 enableRetry 和 timerTesting 参数，但原调用未传，忽略
 
-    // 直接使用已加载的库
-    var restClient = web.rest.client(, "127.0.0.1:" + searcherHttpProxyPort);
-    restClient._http.setTimeouts(4000, 5000, 5000);
-    var ret = restClient.get("https://www.google.com/generate_204");
-    var lastStatusCode = restClient.lastStatusCode;
-    restClient.close();
-  //      if(lastStatusCode == 204) {
-   //         frmXray.edit.print("找到可用服务器，索引号为：" + outboundIndex + ", 服务器地址为：" + outbound.address);
-            frmXray.onSearcherSucces(outboundIndex, outbound, lastStatusCode == 204);
-      //      frmXray.callRetryQueueB(outboundIndex, outbound, (lastStatusCode == 204));
-  //      } else {
-    //        frmXray.onSearcherSucces(outboundIndex, outbound, false);
-    //    }
-    // 将结果回调到主线程处理
- //   frmXray.invoke(function() {
+	var frmXray               = taskData.frmXray;
+	var outbound              = taskData.outbound;
+	var outboundIndex         = taskData.outboundIndex;
+	var searcherHttpProxyPort = taskData.searcherHttpProxyPort;
 
+	// 通过本机搜索器 HTTP 入站端口，经该槽位出站访问测试地址
+	var restClient = web.rest.client(, "127.0.0.1:" + searcherHttpProxyPort);
+	restClient._http.setTimeouts(4000, 5000, 5000);
+	var ret = restClient.get("https://www.google.com/generate_204");
+	var lastStatusCode = restClient.lastStatusCode;
+	restClient.close();
 
+	// 将结果回调到主线程处理
+	frmXray.onSearcherSucces(outboundIndex, outbound, lastStatusCode == 204);
+};
 
-        thread.set("searchingBackground",false);
-        debug.log.print("searcherPool 开始运行后")
-        // 递归调用自身，继续下一个搜索任务
-	//	frmXray.callRetryQueueB(frmXray,lastStatusCode)
- //   });
-});
+// 计算当前应有的并发数：以内核实际生成的搜索器槽位数为准（回退到配置项）
+var getSearcherPoolSize = function(){
+	var n = tonumber(xray.core.searchBatchSize);
+	if(!n || n < 1) n = tonumber(config.proxy.searchBatchSize);
+	if(!n || n < 1) n = 10;
+	if(n > SEARCHER_POOL_MAX) n = SEARCHER_POOL_MAX;
+	return math.floor(n);
+};
+
+// 销毁线程池，释放线程与内存（取消勾选后台搜索时调用）
+frmXray.destroySearcherPool = function(){
+	if(frmXray.searcherPool){
+		frmXray.searcherPool.clear();     // 清空未执行任务，避免销毁时等待
+		frmXray.searcherPool.quit(3000);  // 通知所有线程退出并等待关闭
+		frmXray.searcherPool = null;
+		frmXray.searcherPoolSize = 0;
+		debug.log.print("searcherPool 已销毁");
+	}
+};
+
+// 确保线程池存在且尺寸与内核槽位数一致；尺寸变化时自动重建
+frmXray.ensureSearcherPool = function(){
+	var wantSize = getSearcherPoolSize();
+	if(frmXray.searcherPool && frmXray.searcherPoolSize == wantSize){
+		return frmXray.searcherPool;  // 尺寸匹配，直接复用
+	}
+
+	frmXray.destroySearcherPool();    // 尺寸不符，先销毁旧池
+
+	// 创建线程池会同步创建 wantSize 个线程（约 40ms/个），并发数较大时此处会短暂耗时
+	frmXray.edit.print("正在创建搜索线程池( 并发 " + wantSize + " ) ...");
+
+	frmXray.searcherPool = thread.works(wantSize, frmXray.searcherWorker);
+	frmXray.searcherPoolSize = wantSize;
+	debug.log.print("searcherPool 已创建, 并发数 = " + wantSize);
+	return frmXray.searcherPool;
+};
 
 
 
@@ -3253,16 +3282,16 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 
     if(frmXray.chkSearchMode.checked) {
         if(thread.get("searchingBackground")) {
-            debug.log.print("chkSearchMode is running.");
+       //     debug.log.print("chkSearchMode is running.");
             return;
         }
         if(!xray.core.prcsxray) {
-            debug.log.print("xray.core.prcsxray is null, setSearcherTimer.");
+       //     debug.log.print("xray.core.prcsxray is null, setSearcherTimer.");
             //setSearcherTimer();
             return;
         }
         
-        debug.log.print("searcherTimerID is ",..searcherTimerID);
+     //   debug.log.print("searcherTimerID is ",..searcherTimerID);
         
         if(!..searcherTimerID){
 			setSearcherTimer();
@@ -3276,95 +3305,81 @@ frmXray.chkSearchMode.oncommand = function(id,event){
             return;
         }
 
-        var next = outbounds[frmXray.searcherIndex];
-        if(next.protocol == "ssr" || next.protocol == "naive") {
-            frmXray.searcherIndex++;
+// === 批量并发搜索：一次测 searchBatchSize 个服务器 ===
+        var batchSize = tonumber(xray.core.searchBatchSize);
+        if(!batchSize || batchSize < 1) batchSize = 1;
+
+        var batch = {};
+        var scanIndex = frmXray.searcherIndex;
+        while(#batch < batchSize && scanIndex <= #outbounds){
+            var node = outbounds[scanIndex];
+            if(node && node.protocol != "ssr" && node.protocol != "naive"){
+                table.push(batch, scanIndex);
+            }
+            scanIndex++;
+        }
+
+        if(#batch == 0){
+            // 本轮无可测节点，回到起点，等待下个周期
+            frmXray.searcherIndex = 1;
             thread.set("searchingBackground",false);
-          //  frmXray.chkSearchMode.oncommand();
             return;
         }
 
+        // 一次性推进搜索索引（本批节点统一交给 worker 处理）
+        frmXray.searcherIndex = scanIndex;
+
+        // 确保搜索线程池已按当前并发数创建（尺寸变化时自动重建，无需重启软件/内核）
+        var searcherPool = frmXray.ensureSearcherPool();
+
         thread.set("searchingBackground",true);
-        frmXray.edit.print("后台搜索序号: " + frmXray.searcherIndex + " ,地址为：" + next.address + " 总数为：" + #outbounds);
-		
-	//	frmXray.listview.ensureVisible(frmXray.searcherIndex);//确保此行可见	
-        frmXray.listview.setItemText("后台测试中", frmXray.searcherIndex, 8);
+        // batch[1] 为本批第一个服务器在列表中的序号，便于直观看到搜索进度
+        frmXray.edit.print("后台搜索批次: " + #batch + " 个服务器, 起始序号：" + batch[1] + ", 总数为：" + #outbounds);
 
-		
-		//先清除xray搜索服务器配置，然后再添加新的
-		var cleaner;
-		var i = 1;			
-		while(!cleaner && i<4 ){
-			//console.print("删除配置回复null")	
-			//cleaner = xray.core.stopSearcher(frmXray.edit,outbound);
-			i++;
-			cleaner = xray.core.deleteOutbound(frmXray.edit,outbound,"proxySearcher","searcherConfig.json");
-		}
-		//console.print("删除配置回复："+cleaner)	
-		//frmXray.searcherIndex = 1;
-		
-		//console.print("next.lastValiable:"+next.lastValiable)
-		var adder//xray添加搜索配置		
-		while(!adder && i>1 ){
-			//console.print("添加配置回复null")
-			//adder = xray.core.startSearcher(frmXray.edit,next);
-			i--;
-			adder = xray.core.addOutbound(frmXray,frmXray.edit,next,"proxySearcher","searcherConfig.json");
-		}
-		//console.print("添加配置回复："+adder);
-		
-/*
-		
-		//for(p=frmXray.searcherIndex;#outbounds;1){
-			next = outbounds[frmXray.searcherIndex]; 
-			
-			console.print("选择前next地址为：")	
-			console.dump(next.address);		
-			
-			if(next.failedCount){							
-			for( i=frmXray.searcherIndex+1;#outbounds;1 ){   					 
-				var j =outbounds[i];
-				if(outbounds[i].ps == "已测通"){
-					continue;	
-				}		
-				if(!outbounds[i].failedCount) {//找出最近可用的服务器,没有记录的失败计数视为0
-					next=j;
-					break;
-				}
-				elseif(next.failedCount > j.failedCount){
-					next=j;
-				}						
-			}
-			if(next.failedCount){
-				debug.log.print("后台搜索failedCount为"+next.failedCount+"当前服务器为："+next.address);
-			}
-			else {
-				debug.log.print("后台搜索failedCount为0或NULL");
-			}
-				
-			}	
-*/
-			
-			//console.print("选择后next地址为：")	
-			//console.dump(next.address);
+        // 将列表视图定位/滚动到本批第一个服务器所在行（临时便于观察搜索进度）
+        if(frmXray.listview && batch[1]){
+            frmXray.listview.selIndex = batch[1];
+            frmXray.listview.ensureVisible(batch[1]);
+        }
 
-        // ★ 替换 thread.invoke 为线程池投递 ★
-        var taskData = {
-            frmXray = frmXray;
-            outbound = next;
-            outboundIndex = frmXray.searcherIndex;
-      //      outbounds = outbounds;
-            searcherHttpProxyPort = xray.core.searcherHttpProxyPort;
-        };
-        debug.log.print("searcherPool 调用前")
-        searcherPool.push(taskData);
-		debug.log.print("searcherPool 调用后")
+        // 初始化批次完成计数（由 onSearcherSucces 在主线程串行更新）
+        frmXray.searchBatchTotal = #batch;
+        frmXray.searchBatchDone = 0;
+
+        // 对每个槽位：清理旧出站 + 添加新出站 + 提交任务
+        for(slot=1;#batch;1){
+            var nodeIndex = batch[slot];
+            var node = outbounds[nodeIndex];
+            frmXray.listview.setItemText("后台测试中", nodeIndex, 8);
+
+            var slotTag = "proxySearcher_" + slot;
+            var slotConfig = "searcherConfig_" + slot + ".json";
+
+            // 清除该槽位旧出站（tag 不存在时返回 null，属正常）
+            xray.core.deleteOutbound(frmXray.edit, node, slotTag, slotConfig);
+
+            // 添加该槽位新出站
+            var adder = xray.core.addOutbound(frmXray, frmXray.edit, node, slotTag, slotConfig);
+            if(!adder){
+                debug.log.print("后台搜索: 添加槽位出站失败", slotTag,nodeIndex, node.address,node.protocol);
+            }
+
+            // 提交任务（线程池异步并发执行）
+            searcherPool.push({
+                frmXray = frmXray;
+                outbound = node;
+                outboundIndex = nodeIndex;
+                searcherHttpProxyPort = xray.core.searcherHttpProxyPorts[slot];
+            });
+        }
     } 
     else {
         if(..searcherTimerID) frmXray.clearInterval(..searcherTimerID);
         ..searcherTimerID = null;
         frmXray.searchingBackground = false;
         frmXray.edit.print("退出搜索模式");
+        // 取消勾选后台搜索：销毁线程池，释放线程与内存
+        frmXray.destroySearcherPool();
     }
 }
 /**
@@ -3615,9 +3630,11 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 				outbounds[outboundIndex].failedCount++;
 			}
 		}	
-		// 无论成功失败，继续搜索下一个节点
-        frmXray.searcherIndex++;
-         
+// 完成计数：当本批次全部完成后解锁，允许定时器继续下一批
+        frmXray.searchBatchDone = (frmXray.searchBatchDone ? frmXray.searchBatchDone : 0) + 1;
+        if(frmXray.searchBatchDone >= (frmXray.searchBatchTotal ? frmXray.searchBatchTotal : 1)){
+            thread.set("searchingBackground",false);
+        }
 		if(outbounds[outboundIndex].lastValiable) {
 			frmXray.listview.setItemText("上次可用："+outbounds[outboundIndex].lastValiable,outboundIndex,8);
 		}
@@ -3628,6 +3645,11 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 		
 	}
 	else {
+		// 地址不匹配（配置可能已变动）：仍需完成计数，避免 searchingBackground 永不解锁导致搜索卡死
+		frmXray.searchBatchDone = (frmXray.searchBatchDone ? frmXray.searchBatchDone : 0) + 1;
+		if(frmXray.searchBatchDone >= (frmXray.searchBatchTotal ? frmXray.searchBatchTotal : 1)){
+			thread.set("searchingBackground",false);
+		}
 		publish("uiCommand.restartxrayCore");
 		return false;  
 	}

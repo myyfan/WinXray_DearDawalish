@@ -3316,17 +3316,29 @@ frmXray.searcherWorker = function(taskData) {
 	var frmXray               = taskData.frmXray;
 	var outbound              = taskData.outbound;
 	var outboundIndex         = taskData.outboundIndex;
+	var slot                  = taskData.slot;
 	var searcherHttpProxyPort = taskData.searcherHttpProxyPort;
 
-	// 通过本机搜索器 HTTP 入站端口，经该槽位出站访问测试地址
-	var restClient = web.rest.client(, "127.0.0.1:" + searcherHttpProxyPort);
-	restClient._http.setTimeouts(4000, 5000, 5000);
-	var ret = restClient.get("https://www.google.com/generate_204");
-	var lastStatusCode = restClient.lastStatusCode;
-	restClient.close();
+	// 通过本机搜索器 HTTP 入站端口，经该槽位出站访问测试地址。
+	// 用 call 包裹以确保「无论测试过程是否异常，都必定回调一次」——
+	// 否则该槽位永不归还，滚桶式调度会卡死。
+	var callOk,testOk = call(
+		function(){
+			var restClient = web.rest.client(, "127.0.0.1:" + searcherHttpProxyPort);
+			restClient._http.setTimeouts(4000, 5000, 5000);
+			var ret = restClient.get("https://www.google.com/generate_204");
+			var lastStatusCode = restClient.lastStatusCode;
+			restClient.close();
+			return lastStatusCode == 204;
+		}
+	);
+	if(!callOk){
+		debug.log.print("后台搜索: 测试过程异常", outboundIndex, tostring(testOk));
+		testOk = false;
+	}
 
-	// 将结果回调到主线程处理
-	frmXray.onSearcherSucces(outboundIndex, outbound, lastStatusCode == 204);
+	// 将结果回调到主线程处理（slot 用于归还槽位并立即补位）
+	frmXray.onSearcherSucces(outboundIndex, outbound, testOk ? true : false, slot);
 };
 
 // 计算当前应有的并发数：以内核实际生成的搜索器槽位数为准（回退到配置项）
@@ -3341,8 +3353,10 @@ var getSearcherPoolSize = function(){
 // 销毁线程池，释放线程与内存（取消勾选后台搜索时调用）
 frmXray.destroySearcherPool = function(){
 	if(frmXray.searcherPool){
-		frmXray.searcherPool.clear();     // 清空未执行任务，避免销毁时等待
-		frmXray.searcherPool.quit(3000);  // 通知所有线程退出并等待关闭
+		// 不要调用 clear()：其内部 while(_thrdWorking>0) 是无限等待，
+		// 一旦有 worker 卡住（例如上面的 push 死锁）会导致销毁线程池时界面永久卡死。
+		// quit(timeout) 自带超时、会自动清空任务队列与返回值，并用 terminate 兜底，足够安全。
+		frmXray.searcherPool.quit(3000);  // 通知所有线程退出并等待关闭（超时兜底）
 		frmXray.searcherPool = null;
 		frmXray.searcherPoolSize = 0;
 		debug.log.print("searcherPool 已销毁");
@@ -3364,10 +3378,171 @@ frmXray.ensureSearcherPool = function(){
 	frmXray.searcherPool = thread.works(wantSize, frmXray.searcherWorker);
 	frmXray.searcherPoolSize = wantSize;
 	debug.log.print("searcherPool 已创建, 并发数 = " + wantSize);
+	debug.log.print("[SD] POOL-CREATE size=",wantSize);  // >>>>> SD
 	return frmXray.searcherPool;
 };
 
+// === 滚桶式调度（barrel / rolling scheduling）===
+// 旧实现是「整批等待」：一次派发 N 个节点，等这一批全部测完才派发下一批。
+// 于是整批耗时取决于最慢的那个节点（例如 9 个 2 秒完成，1 个 30 秒超时 → 整批 30 秒），
+// 且已空闲的槽位被迫空等，浪费并发度。
+//
+// 新实现改为「槽位一空立即补下一个」：只有当本轮所有节点测完且所有槽位都空闲时才收尾。
+// 用一个 busyCount 计数器表示在测槽位数，归零即代表本轮结束。
+frmXray.searcherSlots = {};      // 槽位号 -> 当前在测节点索引（null 表示空闲）
+frmXray.searcherBusyCount = 0;   // 当前在测的槽位数
+frmXray.searcherWatchdogTick = 0;// 最近一次调度进展时间（看门狗用）
+frmXray.searcherDoneCount = 0;   // 已完成的搜索任务数（用于周期性进度日志）
 
+// 后台搜索时让列表视图「跟随显示」哪个槽位当前正在测试的节点行（便于人工观察）。
+// 设为 1 表示跟随槽位 1，设为其他正整数则跟随对应槽位；设为 null 或 0 表示不自动滚动。
+frmXray.searcherFollowSlot = 1;
+
+// 取下一个可测节点的索引并推进游标；返回 null 表示本轮已扫完
+frmXray.nextSearchableIndex = function(){
+	var outbounds = config.proxy.outbounds;
+	var total = #outbounds;
+	while(frmXray.searcherIndex <= total){
+		var idx = frmXray.searcherIndex;
+		frmXray.searcherIndex = idx + 1;
+		var node = outbounds[idx];
+		// 跳过需要独立内核的协议（无法参与 Xray 多出口并发搜索）
+		if(node && !xray.protocols.isStandalone(node.protocol)){
+			return idx;
+		}
+	}
+	return null;
+};
+
+// 向指定槽位派发一个搜索任务；返回 true 表示已成功派发
+frmXray.dispatchSearchTask = function(slot){
+	if(!xray.core.prcsxray){ 
+		debug.log.print("[SD] D-SLOT slot=",slot,"FAIL 内核进程为空");  // >>>>> SD
+		return false; 
+	}
+
+	// 槽位必须有对应的入站端口，否则不能派发（且不推进节点游标，避免漏测）
+	var proxyPort = xray.core.searcherHttpProxyPorts[slot];
+	if(!proxyPort){ 
+		debug.log.print("[SD] D-SLOT slot=",slot,"FAIL 无入站端口 httpPorts=",#xray.core.searcherHttpProxyPorts);  // >>>>> SD
+		return false; 
+	}
+
+	var slotTag = "proxySearcher_" + slot;
+	var slotConfig = "searcherConfig_" + slot + ".json";
+
+	// 用循环（而非递归）逐个取节点，坏节点直接跳过，直到成功派发或本轮扫完。
+	while(true){
+		// 取节点：若本轮已扫完则无可派发
+		var nodeIndex = frmXray.nextSearchableIndex();
+		if(!nodeIndex){ 
+			debug.log.print("[SD] D-SLOT slot=",slot,"FAIL 节点已扫完 idx=",frmXray.searcherIndex);  // >>>>> SD
+			return false; 
+		}
+
+		var node = config.proxy.outbounds[nodeIndex];
+
+		// 【重要】节点数据可能很脏（字段类型不符、协议配置非法等）。
+		// 必须把异常关在这一个节点内部：一旦异常逃逸到消息循环，
+		// 本轮 dispatch 会被中途打断，而 thread.set("searchingBackground",true) 已经设置，
+		// 后果是弹出 RAW CALLBACK ERROR + 后台搜索停滞到 120 秒看门狗才恢复。
+		// 另注意顺序：先提交任务、最后才占领槽位并计数，
+		// 确保 busyCount 与「已提交到线程池的任务数」严格一致，避免槽位永久泄漏。
+		var callOk,dispatched,err = call(
+			function(nodeIndex,node,slotTag,slotConfig,proxyPort,slot){
+				// 清除该槽位旧出站（tag 不存在时返回 null，属正常）
+				xray.core.deleteOutbound(frmXray.edit, node, slotTag, slotConfig);
+
+				// 添加该槽位新出站
+				var adder = xray.core.addOutbound(frmXray, frmXray.edit, node, slotTag, slotConfig);
+				if(!adder){ return null,"添加槽位出站失败"; }
+
+				frmXray.listview.setItemText("后台测试中", nodeIndex, 8);
+
+				// 跟随显示：让列表视图滚动到该槽位当前正在测试的节点行（便于人工观察）
+				if(frmXray.searcherFollowSlot && slot == frmXray.searcherFollowSlot){
+					frmXray.listview.ensureVisible(nodeIndex);
+				}
+
+				// 输出到界面输出窗口，便于直观看到当前在测哪个节点（沿用旧版串行搜索的输出风格）
+				frmXray.edit.print("后台搜索序号: " + nodeIndex + " ,地址为：" + tostring(node.address) + " ,协议：" + tostring(node.protocol) + " ,槽位：" + slot);
+
+				// 提交任务（线程池异步并发执行）
+				// 【关键·死锁根因】必须用 pushAsync，绝不能用 push ：
+				//   thread.works.push 内部执行 this._semaphore.waitOne()，会阻塞等待「空闲 worker」
+				//   （实测：3 个 worker 全忙时 push 阻塞 3000ms，直到有 worker 空出来才返回）。
+				//   而本函数是在 worker 线程「同步封送」过来的回调里执行的 —— 该 worker 此刻正阻塞等待
+				//   本次调用返回，它的 semaphore.release()（在任务函数返回后才执行）永远不会发生。
+				//   于是 push 永远等不到空闲 worker；waitOne 在 UI 线程还会继续泵消息，把其它 worker
+				//   的回调再泵进来递归 push → UI 线程与全部 worker 互锁死，后台搜索彻底停摆。
+				//   pushAsync 不等待空闲线程、直接入队返回，从根上消除死锁；且滚桶式调度只在
+				//   「有任务完成」时才补位，在途任务数天然不会超过 worker 数，无需 push 的背压。
+				var sdPushOk = frmXray.ensureSearcherPool().pushAsync({  // >>>>> SD
+					frmXray = frmXray;
+					outbound = node;
+					outboundIndex = nodeIndex;
+					slot = slot;
+					searcherHttpProxyPort = proxyPort;
+				});
+				if(!sdPushOk){  // >>>>> SD
+					return null,"任务入池失败(push 返回空)";  // >>>>> SD
+				}  // >>>>> SD
+
+				// 任务确实已进入线程池，此时才占领槽位并计数
+				frmXray.searcherSlots[slot] = nodeIndex;
+				frmXray.searcherBusyCount = (frmXray.searcherBusyCount ? frmXray.searcherBusyCount : 0) + 1;
+				frmXray.searcherWatchdogTick = time.tick();
+				return true;
+			}
+			,null,nodeIndex,node,slotTag,slotConfig,proxyPort,slot
+		);
+
+		if(callOk && dispatched){ return true; }
+
+		// 该节点不可用：记录原因、标记失败，然后换下一个节点
+		// （callOk 为 false 时，dispatched 位置上拿到的是 call 返回的错误信息）
+		var reason = callOk ? tostring(err) : tostring(dispatched);
+		debug.log.print("[SD] D-SLOT slot=",slot,"idx=",nodeIndex,"FAIL ",reason);  // >>>>> SD
+		debug.log.print("后台搜索: 槽位出站准备失败，跳过节点", slotTag, nodeIndex, node ? node.address : "?", node ? node.protocol : "?", reason);
+
+		if(node){
+			node.failedCount = (node.failedCount ? node.failedCount : 0) + 1;
+			frmXray.listview.setItemText("失败次数：" + node.failedCount, nodeIndex, 8);
+		}
+	}
+};
+
+// 槽位空闲回调：立即补位（滚桶）；本轮扫完且所有槽位空闲则收尾解锁
+frmXray.onSearcherSlotFree = function(slot){
+	frmXray.searcherWatchdogTick = time.tick();
+
+	if(slot){ frmXray.searcherSlots[slot] = null; }
+
+	frmXray.searcherBusyCount = (frmXray.searcherBusyCount ? frmXray.searcherBusyCount : 0) - 1;
+	if(frmXray.searcherBusyCount < 0) frmXray.searcherBusyCount = 0;
+
+	// 1) 本轮还有待测节点 → 立刻用这个刚空出来的槽位补上
+	// 【重要】必须用 call 包裹：dispatchSearchTask 内部若抛出未捕获异常，
+	// 异常会中断本函数（FREE 日志与收尾逻辑都不执行）→ 槽位计数器错乱 + 搜索永久停滞。
+	var sdRefill = false;
+	if(slot){
+		var okRefill,refillRet = call(frmXray.dispatchSearchTask,frmXray,slot);
+		if(okRefill){
+			sdRefill = refillRet ? true : false;
+		}
+		else{
+			debug.log.print("[SD] REFILL-ERR slot=",slot,"err=",tostring(refillRet));  // >>>>> SD
+		}
+	}
+	if(sdRefill){ return; }
+
+	// 2) 没有可派发的任务：最后一个槽位完成即收尾，允许定时器进入下一轮
+	if(frmXray.searcherBusyCount <= 0){
+		frmXray.searcherBusyCount = 0;
+		thread.set("searchingBackground",false);
+		debug.log.print("[SD] ROUND-END 解锁 bg=false");  // >>>>> SD
+	}
+};
 
 //后台搜索模式开启
 frmXray.chkSearchMode.oncommand = function(id,event){
@@ -3379,9 +3554,25 @@ frmXray.chkSearchMode.oncommand = function(id,event){
     if(frmXray.chkSearchMode.checked) {
         if(thread.get("searchingBackground")) {
        //     debug.log.print("chkSearchMode is running.");
+            // 看门狗：滚桶式调度依赖每个 worker 归还槽位。若某个 worker 异常卡死导致
+            // busyCount 永不归零，这里在长时间（120 秒）无任何进展时强制重置调度状态，
+            // 避免后台搜索永久卡死（单次测试最长约 20 秒，120 秒不会误触发）。
+            var watchdogTick = frmXray.searcherWatchdogTick;
+            if(watchdogTick && (time.tick() - watchdogTick) > 120000){
+                debug.log.print("后台搜索看门狗: 长时间无进展，强制重置调度状态");
+                // >>>>> SD-BEGIN
+                debug.log.print("[SD] WATCHDOG 重置前 busy=",frmXray.searcherBusyCount,"slots=",table.tostring(frmXray.searcherSlots),"idx=",frmXray.searcherIndex);
+                // <<<<< SD-END
+                frmXray.searcherBusyCount = 0;
+                frmXray.searcherSlots = {};
+                thread.set("searchingBackground",false);
+            }
             return;
         }
         if(!xray.core.prcsxray) {
+            // >>>>> SD-BEGIN
+            debug.log.print("[SD] NO-PRCS 内核进程为空，无法派发");
+            // <<<<< SD-END
        //     debug.log.print("xray.core.prcsxray is null, setSearcherTimer.");
             //setSearcherTimer();
             return;
@@ -3395,85 +3586,78 @@ frmXray.chkSearchMode.oncommand = function(id,event){
         var outbounds = config.proxy.outbounds;
 
         if(frmXray.searcherIndex > #outbounds) {
+            // >>>>> SD-BEGIN
+            debug.log.print("[SD] WRAP 游标到头 idx=",frmXray.searcherIndex,"total=",#outbounds);
+            // <<<<< SD-END
             frmXray.searcherIndex = 1;
             thread.set("searchingBackground",false);
             if(#outbounds > 200) publish("uiCommand.restartxrayCore");
             return;
         }
 
-// === 批量并发搜索：一次测 searchBatchSize 个服务器 ===
-        var batchSize = tonumber(xray.core.searchBatchSize);
-        if(!batchSize || batchSize < 1) batchSize = 1;
+// === 滚桶式并发搜索：一次性填满 N 个槽位，之后每完成一个立即补下一个 ===
+        // 不再等待整批完成，避免"最慢节点决定整批耗时"以及空闲槽位被浪费。
+        var poolSize = getSearcherPoolSize();
+        var startIndex = frmXray.searcherIndex;
+        // >>>>> SD-BEGIN
+        debug.log.print("[SD] ENV poolSize=",poolSize,"startIndex=",startIndex,"outbounds=",#outbounds,
+            "httpPorts=",#xray.core.searcherHttpProxyPorts,"ports=",table.tostring(xray.core.searcherHttpProxyPorts),
+            "coreBatch=",xray.core.searchBatchSize,"cfgBatch=",config.proxy.searchBatchSize,
+            "prcs=",tostring(xray.core.prcsxray));
+        // <<<<< SD-END
 
-        var batch = {};
-        var scanIndex = frmXray.searcherIndex;
-        while(#batch < batchSize && scanIndex <= #outbounds){
-            var node = outbounds[scanIndex];
-            // 跳过需要独立内核的协议（无法参与 Xray 多出口并发搜索）
-            if(node && !xray.protocols.isStandalone(node.protocol)){
-                table.push(batch, scanIndex);
-            }
-            scanIndex++;
+        frmXray.searcherSlots = {};
+        frmXray.searcherBusyCount = 0;
+        frmXray.searcherWatchdogTick = time.tick();
+        thread.set("searchingBackground",true);
+
+        var dispatched = 0;
+        // >>>>> SD-BEGIN
+        var sdDetail = {};
+        // <<<<< SD-END
+        for(slot=1;poolSize;1){
+            // dispatchSearchTask 内部已隔离单个节点的异常；这里再兜一层，
+            // 确保任何意外异常都不会打断本轮派发（否则 searchingBackground 会一直为 true）
+            var callOk,ok = call(frmXray.dispatchSearchTask,frmXray,slot);
+            // >>>>> SD-BEGIN
+            table.push(sdDetail,"s" + slot + "=" + tostring(callOk) + "|" + tostring(ok));
+            // <<<<< SD-END
+            if(callOk && ok){ dispatched++; }
         }
+        // >>>>> SD-BEGIN
+        debug.log.print("[SD] DISPATCHED total=",dispatched,"detail=",string.join(sdDetail,","));
+        // <<<<< SD-END
 
-        if(#batch == 0){
-            // 本轮无可测节点，回到起点，等待下个周期
-            frmXray.searcherIndex = 1;
+        if(dispatched == 0){
+            // 本轮已无可测节点（游标已扫完），或内核/端口尚未就绪：解锁，交还定时器等下个周期
+            frmXray.searcherBusyCount = 0;
             thread.set("searchingBackground",false);
             return;
         }
 
-        // 一次性推进搜索索引（本批节点统一交给 worker 处理）
-        frmXray.searcherIndex = scanIndex;
+        frmXray.edit.print("后台搜索: 并发 " + dispatched + " 个槽位, 起始序号：" + startIndex + ", 总数为：" + #outbounds);
 
-        // 确保搜索线程池已按当前并发数创建（尺寸变化时自动重建，无需重启软件/内核）
-        var searcherPool = frmXray.ensureSearcherPool();
-
-        thread.set("searchingBackground",true);
-        // batch[1] 为本批第一个服务器在列表中的序号，便于直观看到搜索进度
-        frmXray.edit.print("后台搜索批次: " + #batch + " 个服务器, 起始序号：" + batch[1] + ", 总数为：" + #outbounds);
-
-        // 将列表视图定位/滚动到本批第一个服务器所在行（临时便于观察搜索进度）
-        if(frmXray.listview && batch[1]){
-            frmXray.listview.selIndex = batch[1];
-            frmXray.listview.ensureVisible(batch[1]);
-        }
-
-        // 初始化批次完成计数（由 onSearcherSucces 在主线程串行更新）
-        frmXray.searchBatchTotal = #batch;
-        frmXray.searchBatchDone = 0;
-
-        // 对每个槽位：清理旧出站 + 添加新出站 + 提交任务
-        for(slot=1;#batch;1){
-            var nodeIndex = batch[slot];
-            var node = outbounds[nodeIndex];
-            frmXray.listview.setItemText("后台测试中", nodeIndex, 8);
-
-            var slotTag = "proxySearcher_" + slot;
-            var slotConfig = "searcherConfig_" + slot + ".json";
-
-            // 清除该槽位旧出站（tag 不存在时返回 null，属正常）
-            xray.core.deleteOutbound(frmXray.edit, node, slotTag, slotConfig);
-
-            // 添加该槽位新出站
-            var adder = xray.core.addOutbound(frmXray, frmXray.edit, node, slotTag, slotConfig);
-            if(!adder){
-                debug.log.print("后台搜索: 添加槽位出站失败", slotTag,nodeIndex, node.address,node.protocol);
-            }
-
-            // 提交任务（线程池异步并发执行）
-            searcherPool.push({
-                frmXray = frmXray;
-                outbound = node;
-                outboundIndex = nodeIndex;
-                searcherHttpProxyPort = xray.core.searcherHttpProxyPorts[slot];
-            });
+        // 未启用「跟随槽位」时，才在本轮开始时把列表视图定位到本轮第一个服务器所在行；
+        // 启用跟随时由 dispatchSearchTask 持续跟随，避免两者互相拉扯。
+        if(!frmXray.searcherFollowSlot && frmXray.listview && startIndex){
+            frmXray.listview.selIndex = startIndex;
+            frmXray.listview.ensureVisible(startIndex);
         }
     } 
     else {
         if(..searcherTimerID) frmXray.clearInterval(..searcherTimerID);
         ..searcherTimerID = null;
         frmXray.searchingBackground = false;
+
+        // 【重要】必须同时重置线程共享标志与滚桶调度计数：
+        // oncommand 在创建定时器之前就会检查 thread.get("searchingBackground")，
+        // 若这里只改窗体属性而不改线程共享标志，取消勾选后再重新勾选时，
+        // 首次 oncommand 会被直接挡回（且在 setSearcherTimer 之前 return），
+        // 结果就是「后台搜索再也无法启动」。
+        thread.set("searchingBackground",false);
+        frmXray.searcherBusyCount = 0;
+        frmXray.searcherSlots = {};
+
         frmXray.edit.print("退出搜索模式");
         // 取消勾选后台搜索：销毁线程池，释放线程与内存
         frmXray.destroySearcherPool();
@@ -3688,10 +3872,20 @@ if(xray.protocols.isStandalone(outbound.protocol) ){
 }
 **/
 
-frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
+frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot){
+	// 滚桶式调度：首先归还槽位并立即补位下一个待测节点。
+	// 必须放在函数最前面 —— 无论后续走哪个分支（含提前 return），槽位都不会泄漏。
+	frmXray.onSearcherSlotFree(slot);
+
+	// 每完成 100 个节点写一行进度日志：既不刷屏，又能从日志确认调度心跳、及早发现停滞
+	frmXray.searcherDoneCount = (frmXray.searcherDoneCount ? frmXray.searcherDoneCount : 0) + 1;
+	if(frmXray.searcherDoneCount % 100 == 0){
+		debug.log.print("[SD] 进度 已完成=",frmXray.searcherDoneCount,"在测=",frmXray.searcherBusyCount,"游标=",frmXray.searcherIndex);
+	}
+
 	//debug.log.print(outboundIndex)
 	var outbounds = config.proxy.outbounds;
-	if(outbounds[outboundIndex].address == outbound.address ){
+	if(outbounds[outboundIndex] && outbounds[outboundIndex].address == outbound.address ){
 		if( success ){//连通，发布“连接成功”消息
 			frmXray.edit.print("找到可用服务器，索引号为：" + outboundIndex + ", 服务器地址为：" + outbound.address);
 						//console.print("outbound为：");
@@ -3727,11 +3921,6 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 				outbounds[outboundIndex].failedCount++;
 			}
 		}	
-// 完成计数：当本批次全部完成后解锁，允许定时器继续下一批
-        frmXray.searchBatchDone = (frmXray.searchBatchDone ? frmXray.searchBatchDone : 0) + 1;
-        if(frmXray.searchBatchDone >= (frmXray.searchBatchTotal ? frmXray.searchBatchTotal : 1)){
-            thread.set("searchingBackground",false);
-        }
 		if(outbounds[outboundIndex].lastValiable) {
 			frmXray.listview.setItemText("上次可用："+outbounds[outboundIndex].lastValiable,outboundIndex,8);
 		}
@@ -3742,11 +3931,7 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success){
 		
 	}
 	else {
-		// 地址不匹配（配置可能已变动）：仍需完成计数，避免 searchingBackground 永不解锁导致搜索卡死
-		frmXray.searchBatchDone = (frmXray.searchBatchDone ? frmXray.searchBatchDone : 0) + 1;
-		if(frmXray.searchBatchDone >= (frmXray.searchBatchTotal ? frmXray.searchBatchTotal : 1)){
-			thread.set("searchingBackground",false);
-		}
+		// 地址不匹配（配置可能已变动）：重启内核以重新同步出站配置
 		publish("uiCommand.restartxrayCore");
 		return false;  
 	}

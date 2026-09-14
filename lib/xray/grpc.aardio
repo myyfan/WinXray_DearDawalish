@@ -1,0 +1,591 @@
+//xray.gRPC 客户端：纯 aardio 直连 Xray API（h2c + gRPC + protobuf）
+//—— 无需写磁盘配置文件、无需启动 xray.exe 进程
+//—— 仅依赖 wsock.tcp.client（aardio 自带），Win7 可用
+//
+//【协议要点】
+//1. 必须先发送 HTTP/2 连接前言 + SETTINGS；
+//2. 必须读完服务端 SETTINGS 并回 ACK，并等到服务端回 ACK，才能发 HEADERS；
+//3. 否则服务端会返回 trailers-only（看起来像“方法未实现”）。
+//4. 单次调用实测 0~16ms（本机回环），远快于启动 xray.exe 进程（~400ms）。
+namespace xray.grpc;
+
+import wsock.tcp.client;
+import crypt;
+
+//==================== protobuf 写入原语 ====================
+var pbVarint = function(v){
+	v = ..math.floor(v);
+	var out = "";
+	while(true){
+		var b = v % 128;
+		v = ..math.floor(v / 128);
+		if(v > 0){
+			out ++= ..string.pack(b | 0x80);
+		}
+		else{
+			out ++= ..string.pack(b);
+			break;
+		}
+	}
+	return out;
+};
+
+var pbTag = function(field, wire){
+	return pbVarint(field * 8 + wire);
+};
+
+//长度分隔字段（bytes / string / 嵌套消息）
+//容错：节点数据里的字段可能是数值（或 table），直接 #data 会抛
+//"不支持此操作:get length of"。这里统一把非字符串/缓冲区类型转为字符串，
+//避免单个脏字段让整条 addOutbound 调用链崩溃。
+var pbBytes = function(field, data){
+	if(data !== null && !..type.isString(data)){
+		data = ..tostring(data);
+	}
+	return pbTag(field,2) ++ pbVarint(#data) ++ data;
+};
+
+var pbStr = function(field, s){
+	return pbBytes(field, s);
+};
+
+//varint 字段（int / bool）
+var pbInt = function(field, v){
+	return pbTag(field,0) ++ pbVarint(v);
+};
+
+//==================== protobuf 读取原语 ====================
+var pbReadVarint = function(s, pos){
+	var v = 0, shift = 0;
+	while(pos <= #s){
+		var b = s[pos];
+		pos++;
+		v = v | ((b & 0x7F) << shift);
+		if(!(b & 0x80)){ return v, pos; }
+		shift += 7;
+	}
+	return null, pos;
+};
+
+//解析为字段数组: {field=, wire=, value=/data=}
+var pbFields = function(s){
+	var out = {};
+	var pos = 1;
+	while(pos <= #s){
+		var key, p = pbReadVarint(s, pos);
+		if(key === null){ break; }
+		pos = p;
+		var f = key >> 3;
+		var wt = key & 7;
+		if(wt == 0){
+			var v, p2 = pbReadVarint(s, pos);
+			pos = p2;
+			..table.push(out, {field=f;wire=0;value=v});
+		}
+		elseif(wt == 2){
+			var l, p3 = pbReadVarint(s, pos);
+			pos = p3;
+			var d = ..string.slice(s, pos, pos + l - 1);
+			pos += l;
+			..table.push(out, {field=f;wire=2;data=d});
+		}
+		elseif(wt == 5){ pos += 4; }
+		elseif(wt == 1){ pos += 8; }
+		else{ break; }
+	}
+	return out;
+};
+
+var pbGetData = function(fields, f){
+	for(i=1;#fields){
+		if(fields[i].field == f && fields[i].wire == 2){ return fields[i].data; }
+	}
+	return null;
+};
+
+var pbGetInt = function(fields, f){
+	for(i=1;#fields){
+		if(fields[i].field == f && fields[i].wire == 0){ return fields[i].value; }
+	}
+	return 0;
+};
+
+//==================== HTTP/2 帧 ====================
+var mkFrame = function(typ, flags, sid, payload){
+	var len = #payload;
+	return ..string.pack(
+		(len>>16)&0xFF, (len>>8)&0xFF, len&0xFF,
+		typ, flags,
+		(sid>>24)&0xFF, (sid>>16)&0xFF, (sid>>8)&0xFF, sid&0xFF
+	) ++ payload;
+};
+
+//==================== HPACK（字面量编码，不做索引） ====================
+var hpackInt = function(n){
+	if(n < 127){ return ..string.pack(n); }
+	var out = ..string.pack(127 | 0x80);
+	n = n - 127;
+	while(n >= 128){
+		out ++= ..string.pack((n % 128) | 0x80);
+		n = ..math.floor(n / 128);
+	}
+	out ++= ..string.pack(n);
+	return out;
+};
+
+//0x00 = 不做索引的新名称字面量
+var hpackStr = function(name, value){
+	return ..string.pack(0) ++ hpackInt(#name) ++ name ++ hpackInt(#value) ++ value;
+};
+
+//==================== 建立连接并完成 h2 握手 ====================
+//返回可用的连接对象；失败返回 null,错误信息
+var openConn = function(host, port, timeoutMs){
+	var c = ..wsock.tcp.client();
+	if(!c.connect(host, port)){
+		return null, "无法连接 Xray API: " ++ host ++ ":" ++ port;
+	}
+	c.setTimeouts(timeoutMs, timeoutMs);
+
+	//连接前言 + 本端 SETTINGS
+	c.write('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' ++ mkFrame(4,0,0,""));
+
+	//必须完成握手：读到服务端 SETTINGS → 回 ACK → 等到服务端对本端 SETTINGS 的 ACK
+	var k = 0;
+	while(k < 10){
+		k++;
+		var h = c.readEx(9);
+		if(!h || #h < 9){ c.close(); return null, "HTTP/2 握手失败（读取帧头）"; }
+		var l = (h[1]<<16)|(h[2]<<8)|h[3];
+		var ftyp = h[4];
+		var flags = h[5];
+		var pay = l > 0 ? c.readEx(l) : "";
+
+		if(ftyp == 4){
+			if(!(flags & 1)){
+				c.write(mkFrame(4,1,0,""));   // ACK 服务端 SETTINGS
+			}
+			else{
+				return c;                       // 收到服务端 ACK，握手完成
+			}
+		}
+		elseif(ftyp == 6){
+			if(!(flags & 1)){ c.write(mkFrame(6,1,0,pay)); }
+		}
+	}
+
+	c.close();
+	return null, "HTTP/2 握手超时";
+};
+
+//==================== gRPC 调用（需已握手连接） ====================
+var h2Call = function(conn, sid, path, authority, reqBody){
+	var hdr = hpackStr(':method','POST')
+		++ hpackStr(':scheme','http')
+		++ hpackStr(':path', path)
+		++ hpackStr(':authority', authority)
+		++ hpackStr('content-type','application/grpc')
+		++ hpackStr('te','trailers');
+
+	var n = #reqBody;
+	var body = ..string.pack(0, (n>>24)&0xFF, (n>>16)&0xFF, (n>>8)&0xFF, n&0xFF) ++ reqBody;
+
+	//合并写入，避免 Nagle 延迟
+	conn.write(mkFrame(1, 4, sid, hdr) ++ mkFrame(0, 1, sid, body));
+
+	var dataOut = "";
+	var gotData = false;
+
+	var k = 0;
+	while(k < 500){
+		k++;
+		var h = conn.readEx(9);
+		if(!h || #h < 9){ break; }
+		var l = (h[1]<<16)|(h[2]<<8)|h[3];
+		var ftyp = h[4];
+		var flags = h[5];
+		var fsid = ((h[6]&0x7F)<<24)|(h[7]<<16)|(h[8]<<8)|h[9];
+		var payload = l > 0 ? conn.readEx(l) : "";
+
+		if(ftyp == 4){
+			if(!(flags & 1)) conn.write(mkFrame(4,1,0,""));
+		}
+		elseif(ftyp == 6){
+			if(!(flags & 1)) conn.write(mkFrame(6,1,0,payload));
+		}
+		elseif(ftyp == 0){
+			if(fsid == sid){ dataOut ++= payload; gotData = true; }
+		}
+		elseif(ftyp == 3){
+			if(fsid == sid){ break; }
+		}
+		elseif(ftyp == 7){ break; }   // GOAWAY
+
+		if((ftyp == 0 || ftyp == 1) && (flags & 1) && fsid == sid){ break; }
+	}
+
+	if(!gotData){ return null, "gRPC 调用失败（服务端返回 trailers-only，方法可能未启用或请求非法）"; }
+	if(#dataOut < 5){ return null, "gRPC 响应过短"; }
+	//空消息体（如 QueryStats 无数据）长度为 5，此时 slice 会返回 null，必须显式返回空串
+	if(#dataOut == 5){ return ""; }
+	return ..string.slice(dataOut, 6, -1);
+};
+
+//==================== 客户端 ====================
+//每次调用建立独立连接（本机回环下开销 < 1ms），避免长连接状态不一致问题
+//host 默认 "127.0.0.1"，port 默认 10084，timeoutMs 默认 3000
+create = function(host, port, timeoutMs){
+	host = host : "127.0.0.1";
+	port = port : 10084;
+	timeoutMs = timeoutMs : 3000;
+
+	var authority = host ++ ":" ++ port;
+
+	return {
+		host = host;
+		port = port;
+
+		call = function(path, reqBody){
+			var conn, e = openConn(host, port, timeoutMs);
+			if(!conn){ return null, e; }
+			var resp, err = h2Call(conn, 1, path, authority, reqBody);
+			conn.close();
+			return resp, err;
+		};
+
+		close = function(){
+			//每次调用独立连接，无需保留状态
+		};
+	};
+};
+
+//==================== 高层 API ====================
+
+//删除出站（只需要 tag 字符串，无需文件）
+removeOutbound = function(client, tag){
+	var resp, err = client.call("/xray.app.proxyman.command.HandlerService/RemoveOutbound", pbStr(1, tag));
+	if(resp === null){ return null, err; }
+	return true;
+};
+
+//查询统计（支持前缀模式匹配）
+//返回: { {name="...";value=123}, ... }
+queryStats = function(client, pattern){
+	var req = pattern ? pbStr(1, pattern) : "";
+	var resp, err = client.call("/xray.app.stats.command.StatsService/QueryStats", req);
+	if(resp === null){ return null, err; }
+	var out = {};
+	var fs = pbFields(resp);
+	for(i=1;#fs){
+		if(fs[i].field == 1 && fs[i].wire == 2){
+			var sf = pbFields(fs[i].data);
+			..table.push(out, {
+				name = pbGetData(sf, 1);
+				value = pbGetInt(sf, 2);
+			});
+		}
+	}
+	return out;
+};
+
+//读取单个计数器；reset 为 true 时读取后清零
+readStat = function(client, name, reset){
+	var req = pbStr(1, name) ++ (reset ? pbInt(2,1) : "");
+	var resp, err = client.call("/xray.app.stats.command.StatsService/GetStats", req);
+	if(resp === null){ return null, err; }
+	var stat = pbGetData(pbFields(resp), 1);
+	if(stat === null){ return 0; }
+	return pbGetInt(pbFields(stat), 2);
+};
+
+//==================== AddOutbound ====================
+//出站协议 -> protobuf 全名
+var PROTO_TYPE = {
+	vless       = "xray.proxy.vless.outbound.Config";
+	vmess       = "xray.proxy.vmess.outbound.Config";
+	trojan      = "xray.proxy.trojan.ClientConfig";
+	shadowsocks = "xray.proxy.shadowsocks.ClientConfig";
+	ss          = "xray.proxy.shadowsocks.ClientConfig";
+	socks       = "xray.proxy.socks.ClientConfig";
+	socks5      = "xray.proxy.socks.ClientConfig";
+	http        = "xray.proxy.http.ClientConfig";
+	https       = "xray.proxy.http.ClientConfig";
+	hysteria    = "xray.proxy.hysteria.ClientConfig";
+	hysteria2   = "xray.proxy.hysteria.ClientConfig";
+	freedom     = "xray.proxy.freedom.Config";
+	blackhole   = "xray.proxy.blackhole.Config";
+};
+
+//出站协议 -> 账号 protobuf 全名
+var ACCOUNT_TYPE = {
+	vless       = "xray.proxy.vless.Account";
+	vmess       = "xray.proxy.vmess.Account";
+	trojan      = "xray.proxy.trojan.Account";
+	shadowsocks = "xray.proxy.shadowsocks.Account";
+	ss          = "xray.proxy.shadowsocks.Account";
+	socks       = "xray.proxy.socks.Account";
+	socks5      = "xray.proxy.socks.Account";
+	http        = "xray.proxy.http.Account";
+	https       = "xray.proxy.http.Account";
+};
+
+//传输名 -> {protobuf 名, 传输类型名}
+var TRANSPORT = {
+	tcp         = { name="tcp";        proto=null };
+	raw         = { name="raw";        proto=null };
+	ws          = { name="websocket";  proto="xray.transport.internet.websocket.Config" };
+	websocket   = { name="websocket";  proto="xray.transport.internet.websocket.Config" };
+	grpc        = { name="grpc";       proto="xray.transport.internet.grpc.encoding.Config" };
+	xhttp       = { name="splithttp";  proto="xray.transport.internet.splithttp.Config" };
+	httpupgrade = { name="httpupgrade";proto="xray.transport.internet.httpupgrade.Config" };
+	kcp         = { name="mkcp";       proto="xray.transport.internet.kcp.Config" };
+	mkcp        = { name="mkcp";       proto="xray.transport.internet.kcp.Config" };
+	hysteria    = { name="hysteria";   proto="xray.transport.internet.hysteria.Config" };
+};
+
+//地址 -> IPOrDomain（IPv4 输出 4 字节原始地址，其余按域名）
+var pbAddress = function(addr){
+	addr = ..tostring(addr);
+	var a,b,c,d = ..string.match(addr, "^(\d+)\.(\d+)\.(\d+)\.(\d+)$");
+	if(a !== null && b !== null && c !== null && d !== null){
+		//注意：tonumber 会返回两个值（数值 + 结束位置），
+		//在 string.pack 这种变参调用里末位会被展开成多余字节，故必须用括号折叠为单值
+		return pbBytes(1, ..string.pack((..tonumber(a)), (..tonumber(b)), (..tonumber(c)), (..tonumber(d))));
+	}
+	return pbStr(2, addr);
+};
+
+//构建 Endpoint{1:address, 2:port, 3:user{3:TypedMessage{account}}}
+var buildEndpoint = function(proto, s){
+	var e = pbBytes(1, pbAddress(s.address)) ++ pbInt(2, ..tonumber(s.port) : 0);
+	//注意：必须分开赋值。ACCOUNT_TYPE[proto] 只返回一个值，
+	//写为 var acct, accType = ACCOUNT_TYPE[proto] 会让 acct 拿到类型名、accType 恒为 null，
+	//导致账号块永远写不进去（Xray 端表现为 panic: nil pointer dereference）
+	var accType = ACCOUNT_TYPE[proto];
+	var acct = null;
+
+	if(proto == "vless"){
+		var u = (s.users : {})[1];
+		if(u){
+			acct = pbStr(1, u.id : "");
+			if(u.flow){ acct ++= pbStr(2, u.flow); }
+			acct ++= pbStr(3, u.encryption : "none");
+		}
+	}
+	elseif(proto == "vmess"){
+		var u = (s.users : {})[1];
+		if(u){
+			//3 为 security 枚举（auto = 2）
+			acct = pbStr(1, u.id : "") ++ pbBytes(3, pbInt(1, 2));
+		}
+	}
+	elseif(proto == "trojan"){
+		acct = pbStr(1, s.password : "");
+	}
+	elseif(proto == "shadowsocks" || proto == "ss"){
+		acct = pbStr(1, s.password : "") ++ pbInt(2, 6);   // aes-256-gcm = 6
+	}
+	elseif(accType){   // socks / http：带认证时才有 account
+		var u = (s.users : {})[1];
+		if(u){
+			acct = pbStr(1, u.user : "") ++ pbStr(2, u.pass : "");
+		}
+	}
+
+	if(acct !== null && accType){
+		var tm = pbStr(1, accType) ++ pbBytes(2, acct);
+		e ++= pbBytes(3, pbBytes(3, tm));
+	}
+	return e;
+};
+
+//alpn 兼容两种写法：数组 ["h2","http/1.1"] 或字符串 "h2,http/1.1"
+//（Xray JSON 的 StringList 会把字符串按逗号切分，这里保持一致）
+var pushAlpn = function(out, v){
+	if(v === null){ return out; }
+	if(..type(v) == "table"){
+		for(i=1;#v){
+			if(v[i]){ out ++= pbStr(4, v[i]); }
+		}
+		return out;
+	}
+	var s = ..string.trim(..tostring(v));
+	if(!#s){ return out; }
+	for one in ..string.gmatch(s, "[^,; \t]+"){
+		out ++= pbStr(4, one);
+	}
+	return out;
+};
+
+//构建 tls / reality 安全配置
+var buildSecurity = function(ss, sec, name){
+	var secCfg;
+	if(sec == "tls"){
+		var t = ss.tlsSettings : {};
+		secCfg = "";
+		if(t.serverName){ secCfg ++= pbStr(3, t.serverName); }
+		if(t.alpn){ secCfg = pushAlpn(secCfg, t.alpn); }
+		if(t.fingerprint){ secCfg ++= pbStr(11, t.fingerprint); }
+	}
+	elseif(sec == "reality"){
+		var t = ss.realitySettings : {};
+		secCfg = "";
+		if(t.fingerprint){ secCfg ++= pbStr(21, t.fingerprint); }
+		if(t.serverName){ secCfg ++= pbStr(22, t.serverName); }
+		if(t.publicKey){
+			var raw = ..crypt.decodeUrlBase64(t.publicKey);
+			secCfg ++= pbBytes(23, raw ? raw : t.publicKey);
+		}
+		if(t.shortId){
+			secCfg ++= pbBytes(24, pbBytes(1, t.shortId));
+		}
+		if(t.spiderX){ secCfg ++= pbStr(26, t.spiderX); }
+	}
+	else{
+		return "";
+	}
+
+	var fullName = "xray.transport.internet." ++ sec ++ ".Config";
+	return pbStr(3, fullName) ++ pbBytes(4, pbStr(1, fullName) ++ pbBytes(2, secCfg));
+};
+
+//构建传输设置
+var buildTransportCfg = function(ss, network){
+	if(network == "ws" || network == "websocket"){
+		var w = ss.wsSettings : {};
+		var host = w.host;
+		if(!host && w.headers){ host = w.headers.Host; }
+		var c = "";
+		if(host){ c ++= pbStr(1, host); }
+		if(w.path){ c ++= pbStr(2, w.path); }
+		return c;
+	}
+	elseif(network == "grpc"){
+		var g = ss.grpcSettings : {};
+		return g.serviceName ? pbStr(2, g.serviceName) : "";
+	}
+	elseif(network == "httpupgrade"){
+		var h = ss.httpupgradeSettings : {};
+		var c = "";
+		if(h.host){ c ++= pbStr(1, h.host); }
+		if(h.path){ c ++= pbStr(2, h.path); }
+		return c;
+	}
+	elseif(network == "xhttp" || network == "splithttp"){
+		var x = ss.xhttpSettings : {};
+		var c = "";
+		if(x.host){ c ++= pbStr(1, x.host); }
+		if(x.path){ c ++= pbStr(2, x.path); }
+		if(x.mode){ c ++= pbStr(3, x.mode); }
+		return c;
+	}
+	elseif(network == "kcp" || network == "mkcp"){
+		var k = ss.kcpSettings : {};
+		var c = "";
+		if(k.mtu){ c ++= pbInt(1, ..tonumber(k.mtu)); }
+		if(k.tti){ c ++= pbInt(2, ..tonumber(k.tti)); }
+		if(k.uplinkCapacity){ c ++= pbInt(3, ..tonumber(k.uplinkCapacity)); }
+		if(k.downlinkCapacity){ c ++= pbInt(4, ..tonumber(k.downlinkCapacity)); }
+		return c;
+	}
+	elseif(network == "hysteria"){
+		var h = ss.hysteriaSettings : {};
+		var c = "";
+		if(h.auth){ c ++= pbStr(2, h.auth); }
+		c ++= pbInt(3, ..tonumber(h.udpIdleTimeout) : 60);
+		return c;
+	}
+	return "";
+};
+
+//构建 sockopt
+var buildSockopt = function(ss){
+	var s = ss.sockopt;
+	if(!s){ return ""; }
+	var c = "";
+	if(s.mark){ c ++= pbInt(1, ..tonumber(s.mark)); }
+	if(s.tcpFastOpen){ c ++= pbInt(2, 256); }
+	if(s.domainStrategy == "UseIP"){ c ++= pbBytes(22, pbInt(2,1) ++ pbInt(4,4)); }
+	return #c ? pbBytes(6, c) : "";
+};
+
+//构建 mux（SenderConfig 字段 4）
+//MultiplexingConfig{1:enabled, 2:concurrency, 3:xudpConcurrency, 4:xudpProxyUDP443}
+var buildMux = function(mux){
+	if(!mux || mux.enabled === false){ return ""; }
+	var c = "";
+	c ++= pbInt(1, mux.enabled ? 1 : 0);
+	if(mux.concurrency){ c ++= pbInt(2, ..tonumber(mux.concurrency)); }
+	if(mux.xudpConcurrency){ c ++= pbInt(3, ..tonumber(mux.xudpConcurrency)); }
+	//JSON 转 proto 时 Xray 会补默认值 reject，这里保持一致
+	c ++= pbStr(4, mux.xudpProxyUDP443 : "reject");
+	return pbBytes(4, c);
+};
+
+//构建 StreamConfig
+var buildStreamConfig = function(ss){
+	ss = ss : {};
+	var network = ..tostring(ss.network : "tcp");
+	var security = ..tostring(ss.security : "");
+
+	var t = TRANSPORT[network] : TRANSPORT.tcp;
+	var out = "";
+
+	if(t.proto){
+		var tc = buildTransportCfg(ss, network);
+		out ++= pbBytes(2, pbBytes(2, pbStr(1, t.proto) ++ pbBytes(2, tc)) ++ pbStr(3, t.name));
+	}
+
+	out ++= buildSecurity(ss, security, network);
+	out ++= pbStr(5, t.name);
+	out ++= buildSockopt(ss);
+	return out;
+};
+
+//构建 AddOutbound 请求字节（导出以便做字节级自校验）
+//ob: { protocol=; settings={}; streamSettings={} }
+buildAddOutboundRequest = function(tag, ob){
+	var proto = ob.protocol;
+	var protoType = PROTO_TYPE[proto];
+	if(!protoType){ return null, "不支持的协议: " ++ ..tostring(proto); }
+
+	var st = ob.settings : {};
+	var proxyCfg;
+
+	if(proto == "freedom"){
+		proxyCfg = pbInt(1, st.domainStrategy == "UseIP" ? 1 : 0);
+	}
+	elseif(proto == "blackhole"){
+		var resp = st.response : {};
+		proxyCfg = pbBytes(1, pbStr(1, resp.type : "http"));
+	}
+	elseif(proto == "hysteria" || proto == "hysteria2"){
+		var arr = st.servers;
+		var s = arr ? arr[1] : st;
+		if(!s.address){ return null, "缺少服务器地址"; }
+		proxyCfg = pbBytes(1, pbBytes(1, pbAddress(s.address)) ++ pbInt(2, ..tonumber(s.port) : 0));
+	}
+	else{
+		var arr = st.vnext : st.servers;
+		var s = arr ? arr[1] : st;
+		if(!s.address){ return null, "缺少服务器地址"; }
+		proxyCfg = pbBytes(1, buildEndpoint(proto, s));
+	}
+
+	var streamCfg = buildStreamConfig(ob.streamSettings);
+	var senderVal = pbBytes(2, streamCfg) ++ buildMux(ob.mux);
+	var senderTM  = pbStr(1, "xray.app.proxyman.SenderConfig") ++ pbBytes(2, senderVal);
+	var proxyTM   = pbStr(1, protoType) ++ pbBytes(2, proxyCfg);
+	var outbound  = pbStr(1, tag) ++ pbBytes(2, senderTM) ++ pbBytes(3, proxyTM);
+	return pbBytes(1, outbound);
+};
+
+//添加出站（纯 gRPC，不写磁盘文件、不启进程）
+addOutbound = function(client, tag, ob){
+	var req, e = buildAddOutboundRequest(tag, ob);
+	if(req === null){ return null, e; }
+
+	var resp, err = client.call("/xray.app.proxyman.command.HandlerService/AddOutbound", req);
+	if(resp === null){ return null, err; }
+	return true;
+};

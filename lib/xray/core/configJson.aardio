@@ -1689,6 +1689,10 @@ security=#outbound.tls ? outbound.tls : null;
 		..table.assign(proxyOutboundInCore,fixedProxy);
 	}
 
+	//jsonPath 为 null 时仅构建出站对象并返回（供 gRPC 直接下发，不写磁盘文件）
+	if(jsonPath === null){
+		return proxyOutboundInCore;
+	}
 	//console.dump(currentCore.outbounds);
 	..string.save(jsonPath,..web.json.stringify(currentCore) );
 	return jsonPath;

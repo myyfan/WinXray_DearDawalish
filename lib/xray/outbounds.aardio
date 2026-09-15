@@ -12,10 +12,25 @@ import string.regex;
 
 
 namespace xray.outbounds;
+// 分享链接里的用户名/密码解码。
+// inet.url.split 不会自动解码 user，而导出端会 inet.url.encode，
+// 因此导入端必须解码，否则密码含 + % @ : 等字符时往返即损坏。
+// inet.url.decode 遇到非法转义（例如密码本身含裸 %）会返回 null，此时保留原值。
+var decodeUser = function(v){
+	if(type(v)!="string" || !v) return v;
+	if(!..string.indexOf(v,"%")) return v;
+	var d = ..inet.url.decode(v);
+	return d ? d : v;
+};
 //分享链接
 exportSharedLinks = function(outbounds){
 	var outString = {};
 	for i,outbound in ..table.eachIndex(outbounds){
+		// 空字符串在 aardio 中是真值，会让 if(outbound.id) 判定通过，生成非法的 http://@host:port 形式链接；
+		// 这里把空串按「无认证」处理（该值本身就是无效数据）。
+		if(type(outbound.id)=="string" && !#outbound.id) outbound.id = null;
+		// clash 源里 ws 的自定义 Host 可能以大写键残留在顶层，导出前归一化
+		if(outbound.Host && !outbound.host) outbound.host = outbound.Host;
 		if(outbound.protocol == "vmess"){
 			var info = {
 				v = 2;
@@ -29,7 +44,12 @@ exportSharedLinks = function(outbounds){
 				host = outbound.host;
 				tls = outbound.tls;
 				ps = outbound.ps;
+				sni = outbound.sni;
+				alpn = outbound.alpn;
+				fp = outbound["client-fingerprint"];
+				allowInsecure = outbound.allowInsecure;
 			}
+			if(outbound.security) info.scy = outbound.security;
 
 			if(outbound.network=="quic"){
 				info.host = outbound.quicSecutity;
@@ -98,8 +118,13 @@ exportSharedLinks = function(outbounds){
 			var info = {};
 			if(outbound.network!="tcp") info.type = outbound.network;
 			if(outbound.sni){ info.sni = outbound.sni;}
-			info.host = outbound.host;
-			info.path = outbound.path;
+			if(outbound.host) info.host = outbound.host;
+			if(outbound.path) info.path = outbound.path;
+			// trojan 必须带上传输安全信息，否则往返后 TLS 丢失、节点不可用
+			if(outbound.tls) info.security = outbound.tls;
+			if(outbound.allowInsecure) info.allowInsecure = outbound.allowInsecure;
+			if(outbound.alpn) info.alpn = outbound.alpn;
+			if(outbound["client-fingerprint"]) info.fp = outbound["client-fingerprint"];
 
 			if(..table.count(info)){
 				trojan = ..inet.url.appendExtraInfo(trojan,info) 
@@ -116,7 +141,7 @@ exportSharedLinks = function(outbounds){
 			else vless = "vless://" + outbound.address + ":" + outbound.port;
 
 			var info = {};
-			if(outbound.network!="tcp") info.type = outbound.network ;
+			if(outbound.network && outbound.network!="tcp") info.type = outbound.network;
 			// 注意：security 在部分订阅源里表示「传输安全」（tls/reality/xtls），
 			// 不能直接当成 VLESS 的 encryption 导出，否则分享链接会带上非法 encryption，
 			// 被别的客户端导入后同样会导致内核拒绝加载整份配置。
@@ -130,11 +155,21 @@ exportSharedLinks = function(outbounds){
 			if(outbound.alpn) info.alpn = outbound.alpn;
 			if(outbound.disableSessionResumption) info.disableSessionResumption = outbound.disableSessionResumption;
 			if(outbound.sni){ info.sni = outbound.sni;}
-			info.host = outbound.host;
-			info.path = outbound.path;
-			info.seed = info.seed; 
-			info.key = info.key; 
-			info.headerType = info.type;
+			if(outbound.host) info.host = outbound.host;
+			if(outbound.path) info.path = outbound.path;
+			if(outbound.seed) info.seed = outbound.seed;
+			if(outbound.key) info.key = outbound.key;
+			// headerType 是 tcp 传输的伪装类型（http/none），与上面的 type（传输名）不是一回事
+			if(outbound.type) info.headerType = outbound.type;
+			// REALITY / uTLS 指纹 / gRPC / XHTTP（缺这些会导致导出再导入时丢配置）
+			if(outbound["public-key"]) info.pbk = outbound["public-key"];
+			if(outbound["short-id"]) info.sid = outbound["short-id"];
+			if(outbound["spider-x"]) info.spx = outbound["spider-x"];
+			if(outbound["client-fingerprint"]) info.fp = outbound["client-fingerprint"];
+			if(outbound.grpcSni) info.serviceName = outbound.grpcSni;
+			if(outbound.mode) info.mode = outbound.mode;
+			if(outbound.authority) info.authority = outbound.authority;
+			if(outbound.packetEncoding) info.packetEncoding = outbound.packetEncoding;
 
 			if(..table.count(info)){
 				vless = ..inet.url.appendExtraInfo(vless,info) 
@@ -160,6 +195,7 @@ exportSharedLinks = function(outbounds){
 			}
 
 			if(outbound.id){
+// 【模式匹配】从节点 id 拆出「用户名:密码」。([^\:]+)=不含冒号的用户名，\:=字面冒号，([^\:]+)=不含冒号的密码。用于 naive 导出
 				var u,p = ..string.match(outbound.id,"([^\:]+)\:([^\:]+)")
 				if(u && p){
 					urlInfo.user = u;
@@ -183,6 +219,8 @@ exportSharedLinks = function(outbounds){
 			if(outbound["obfs-password"]) info["obfs-password"] = outbound["obfs-password"];
 			if(outbound.pinnedPeerCertSha256) info.pinSHA256 = outbound.pinnedPeerCertSha256;
 			if(outbound.allowInsecure) info.insecure = 1;
+			if(outbound["client-fingerprint"]) info.fp = outbound["client-fingerprint"];
+			if(outbound.alpn) info.alpn = outbound.alpn;
 
 			if(..table.count(info)){
 				hy = ..inet.url.appendExtraInfo(hy,info)
@@ -201,18 +239,16 @@ exportSharedLinks = function(outbounds){
 				location = outbound.ps;
 			}
 
-			if(outbound.protocol == "http"){
-				/*urlInfo.extraInfo ={
-					["tls"] = "none"
-				}*/
-			}
-			elseif(outbound.allowInsecure){
-				urlInfo.extraInfo ={
-					["allowInsecure"] = 1
-				}
-			}
+			// http(s) 代理节点常带 tls / sni / allowInsecure，必须一并导出，否则往返即丢
+			var httpExtra = {};
+			if(outbound.tls) httpExtra.tls = outbound.tls;
+			if(outbound.sni) httpExtra.sni = outbound.sni;
+			if(outbound.allowInsecure) httpExtra.allowInsecure = 1;
+			if(outbound["client-fingerprint"]) httpExtra.fp = outbound["client-fingerprint"];
+			if(..table.count(httpExtra)){ urlInfo.extraInfo = httpExtra; }
 
 			if(outbound.id){
+// 【模式匹配】同上：从 id 拆出「用户名:密码」，用于 http(s) 代理导出
 				var u,p = ..string.match(outbound.id,"([^\:]+)\:([^\:]+)")
 				if(u && p){
 					urlInfo.user = u;
@@ -246,20 +282,37 @@ importFromString = function(str,subscribeUrl,subps){
 	if(!str){ return; }
 	str = ..string.trim(str);//从字符串首尾清除所有空白字符
 
-	// 带认证的 http(s) 代理链接（http://user:pass@host:port）不应被当作订阅源。
-	// 先转换为内部 scheme，避免落入下面的订阅源分支（订阅源几乎不会带 user@host:port 形式）。
-	// 注意：必须用多个变量接收，单变量只会拿到第一个捕获组
-	var httpProxyScheme,httpProxyUser,httpProxyHost,httpProxyPort = ..string.match(str,`^\s*(https?)\:\/\/([^\s\@\/]+)\@([^\s\@\/\:]+)\:(\d+)\s*$`);
+	// http(s) 代理链接（带认证或不带认证）都应作为节点导入，而不是被当成订阅源网址去请求。
+	// 判定要求「必须带端口」，且端口之后只允许尾斜杠、?查询串或 #备注；
+	// 这样既能识别 http://user:pass@host:port，也不会把 http://host:port/sub.txt 这类订阅源误判为节点。
+	// 判定时先剥离 ? 与 # 之后的内容，再匹配主体。
+	var httpProbe = str;
+	var httpCut = ..string.indexOf(httpProbe,"?");
+	if(httpCut) httpProbe = ..string.left(httpProbe,httpCut-1);
+	httpCut = ..string.indexOf(httpProbe,"#");
+	if(httpCut) httpProbe = ..string.left(httpProbe,httpCut-1);
+
+	var httpProxyScheme,httpProxyUser,httpProxyHost,httpProxyPort;
+// 【模式匹配】识别带认证的 http(s) 代理链接。\s*=开头可选空白；(https?)=捕获协议名；[^\s\@\/]+=用户名密码串（不含空白、@、/）；\@=字面 @；[^\s\@\/\:]+=主机名或 IP；\:(\d+)=冒号加端口号；\/?=可选尾斜杠；\s*$=结尾可选空白
+	httpProxyScheme,httpProxyUser,httpProxyHost,httpProxyPort = ..string.match(httpProbe,`^\s*(https?)\:\/\/([^\s\@\/]+)\@([^\s\@\/\:]+)\:(\d+)\/?\s*$`);
+	if(!httpProxyScheme){
+// 【模式匹配】识别不带认证的 http(s) 代理链接（没有 用户名@ 段），其余规则同上
+		httpProxyScheme,httpProxyHost,httpProxyPort = ..string.match(httpProbe,`^\s*(https?)\:\/\/([^\s\@\/\:]+)\:(\d+)\/?\s*$`);
+		httpProxyUser = null;
+	}
 	if(httpProxyScheme){
-		// 内部 scheme 名称不能包含其它协议的子串（例如 "httpproxy://" 会命中 "proxy://" 分支）
-		str = "httppx://" ++ httpProxyScheme ++ "/" ++ httpProxyUser ++ "@" ++ httpProxyHost ++ ":" ++ httpProxyPort;
+		// 用原始字符串重建，保留 ?查询串 与 #备注
+		// 内部 scheme 名称不能包含其它协议的子串（例如 httpproxy 会命中 proxy 分支）
+// 【模式匹配】取 :// 之后的全部内容，即 [用户名@]主机:端口[?查询串][#备注]
+		var httpProxyTail = ..string.match(str,`\:\/\/(.*)$`);
+		str = "httppx://" ++ httpProxyScheme ++ "/" ++ httpProxyTail;
 	}
 
 //如果是网址的话
 	//是网址就访问获取数据
 	if( ..string.startWith(str,"http://") 
 		|| ..string.startWith(str,"https://") 
-		|| ..string.match(str,"^\s*/\N+\s*$")  ){
+		|| ..string.match(str,"^\s*/\N+\s*$")  ){ // 【模式匹配】续行条件：匹配以单斜杠开头的相对路径。^\s*=开头可选空白；/=字面斜杠；\N+=一个或多个非换行字符；\s*$=结尾可选空白。用于识别 github 相对路径形式的订阅源
 		
 	//	debug.log.print(str)
 		
@@ -284,7 +337,9 @@ importFromString = function(str,subscribeUrl,subps){
 		//debug.debug();
 		//debug.log.print(str);
 		
+// 【模式匹配】同上：判断 subscribeUrl 是否为 /xxx 形式的相对路径
 		if(..string.match(subscribeUrl,"^\s*/\N+\s*$") ){
+// 【模式匹配】判断是否为 github 的 blob 或 raw 路径。\/ 中 <> 是 aardio 的非捕获分组，| 表示两边任选其一
 			if(!..string.find(subscribeUrl,"/<blob>|<raw>")){
 				subscribeUrl = ..inet.url.append("https://raw.githubusercontent.com",subscribeUrl);
 			}
@@ -361,6 +416,7 @@ importFromString = function(str,subscribeUrl,subps){
 	//debug.debug() 
 	
 //Base64格式数据解码
+// 【模式匹配】判断整串是否只由 base64 或 hex 字符与空白组成。^=串首；\w=字母数字下划线；=+/-_ 为额外允许字符；\s*$=结尾空白。用于识别 Base64 编码的订阅内容
 	if(..string.match(str,"^\s*[\w=+/-_]+\s*$")){//所有的内容只包含 空白字符、字母和数字、以及下划线和=+/-_的话
 				
 		//debug.debug();
@@ -370,6 +426,7 @@ importFromString = function(str,subscribeUrl,subps){
 		if(!str) return;
 	}		
 //从yaml格式导入proxy-providers订阅
+// 【模式匹配】检测 YAML 中的 proxy-providers 段落。[\r\n]*=任意个回车换行；\s*=任意空白；\:=字面冒号
 	if(..string.match(str,"[\r\n]*proxy-providers\s*\:")){
 		
 		//debug.debug();
@@ -390,6 +447,7 @@ importFromString = function(str,subscribeUrl,subps){
 	
 	
 //从yaml格式导入clash节点
+// 【模式匹配】检测 YAML 中的 proxies 段落，规则同上
 	if(..string.match(str,"[\r\n]*proxies\s*\:")){
 				
 		//debug.debug();
@@ -406,8 +464,9 @@ importFromString = function(str,subscribeUrl,subps){
 //解析json格式
 	var jsonData;
 	var test;
+// 【模式匹配】识别 JSON 数组或对象格式。%\[ 与 %\{ 中的 % 用于把 [ 和 { 转义成字面值；&& 表示两个条件同时成立；!\ 表示取反
 	if( (..string.match(str,"%\[\]") && !..string.match(str,"%\{\}.+%\{\}")) || 
-		(..string.match(str,"%\{\}") && !..string.match(str,"%\{\}.+%\{\}") && !..string.match(str,"-\s*%\{\}")) ){
+		(..string.match(str,"%\{\}") && !..string.match(str,"%\{\}.+%\{\}") && !..string.match(str,"-\s*%\{\}")) ){ // 【模式匹配】同上，附加排除条件：避免把同时含多个 {} 的内容误判为 JSON
 /*
 	if(..string.match(str,"%\[\]") || //匹配到[]的内容
 		..string.match(str,"%\{\}") //匹配到{}的内容
@@ -557,12 +616,16 @@ importFromString = function(str,subscribeUrl,subps){
 		//j++;
 		
 		//Kitsunebi格式vmess链接(来自于v2rayN源码)
+// 【模式匹配】匹配 Kitsunebi 格式的 vmess 链接。vmess\:\/\/=字面 vmess://；([\w=+/-_]+)?=可选的 base64 段；<\S*>=非捕获分组，匹配其后所有非空白字符
 		var vmessKitsunebi,info = ..string.match(line,`vmess\:\/\/([\w=+/-_]+)?(\S*)`);
 		if(vmessKitsunebi){
 			var data = ..crypt.decodeBin(vmessKitsunebi);
+// 【模式匹配】按 @ 把内容拆成两段（段1 含主机与端口，段2 含 id 与 aid）；'@' 为字面分隔符，不做模式匹配
 			var data = ..string.split(data,'@');
 			if(#data == 2){
+// 【模式匹配】把段1 按冒号拆成 主机 与 端口
 				var data1 = ..string.split(data[1],':');
+// 【模式匹配】把段2 按冒号拆成 id 与 aid（额外 ID）
 				var data2 = ..string.split(data[2],':');
 				if(#data1 == 2 && #data2 == 2){
 					var outbound={
@@ -574,9 +637,12 @@ importFromString = function(str,subscribeUrl,subps){
 						network = "tcp";
 					};
 					if(info){
+// 【模式匹配】把参数串按 & 拆成多段
 						info = ..string.split(info,'&');
+// 【模式匹配】从第一段提取 remarks= 之后的内容。\S*=一个或多个非空白字符
 						remarks = ..string.match(info[1],"remarks=(\S*)");
 						outbound.ps = ..inet.url.decode(remarks);
+// 【模式匹配】从第二段提取 alterId= 之后的数字。\d*=零个或多个数字
 						alterId = ..string.match(info[2],"alterId=(\d*)");
 						outbound.alterId = tonumber(alterId);
 					}
@@ -588,6 +654,7 @@ importFromString = function(str,subscribeUrl,subps){
 				}
 			}
 		}
+// 【模式匹配】匹配标准 vmess 链接（uuid@主机:端口）。[^\@\s]+=不含 @ 与空白的 uuid；[^\?\#\s\:]+=不含 ? # 空白 冒号的主机；<\:\d+>* 中 <> 是非捕获分组，* 表示整个「冒号+数字」出现任意次（可有可无）；\S* 匹配剩余部分
 		var vmess2 = ..string.match(line,`vmess\:\/\/[^\@\s]+\@[^\?\#\s\:]+<\:\d+>*\S*`);
 		
 		if( vmess2 ) {
@@ -636,6 +703,7 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//v2rayN格式vmess链接
+// 【模式匹配】匹配 v2rayN 格式的 vmess 链接（vmess:// 后为 base64 串）。[\w=+/-_]+=base64 字符集
 		var vmess = ..string.match(line,`vmess\:\/\/([\w=+/-_]+)`);
 		if( vmess ) { 
 			var json = ..crypt.decodeBin(vmess);	
@@ -656,9 +724,12 @@ importFromString = function(str,subscribeUrl,subps){
 				outbound.subscribeUrl = subscribeUrl;
 
 				if(outbound.ps){
+// 【模式匹配】从备注中提取 user@host:port。(.+)=贪婪匹配用户名；\@=字面 @；(.+)=主机；\:(\d+)=冒号加端口号
 					var u,h,p = ..string.match(outbound.ps,"(.+)\@(.+)\:(\d+)")
 					if(u&&h&&p){
+// 【模式匹配】判断是否为 justmysocks 订阅。justmysocks\d+\.net 中 \d+=一个以上数字，\.=字面点号
 						if(h && ..string.endWith(h,"jamjams.net") && subscribeUrl && ..string.match(subscribeUrl,"justmysocks\d+\.net")){
+// 【模式匹配】判断字符串是否为 IPv4 形式。^\d+=串首的数字段；\.=字面点号；$=串尾
 							if(..string.match(outbound.address,"^\d+\.\d+\.\d+\.\d+$") ){
 								outbound.address = h;
 							}
@@ -672,6 +743,7 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//官方格式vless链接
+// 【模式匹配】匹配 vless 链接。vless\:\/\/=字面 vless://；\S+=其后所有非空白字符
 		var vless = ..string.match(line,`vless\:\/\/\S+`);
 		if( vless ) {
 			var vlessUrl = ..inet.url.split(vless) 
@@ -679,7 +751,7 @@ importFromString = function(str,subscribeUrl,subps){
 				var outbound = {
 					address = vlessUrl.host;
 					port = tonumber(vlessUrl.port) : 443; 
-					id = vlessUrl.user;
+					id = decodeUser(vlessUrl.user);
 					network = "tcp";
 					protocol = "vless";
 					tls = "tls";
@@ -729,6 +801,7 @@ importFromString = function(str,subscribeUrl,subps){
 		}
 
 		//hysteria2 链接（兼容 hy2:// 简写）
+// 【模式匹配】匹配 hysteria2 或 hy2 链接。\S+=全部非空白字符；: 是假值合并运算符，左边为 null 时取右边
 		var hy = ..string.match(line,`hysteria2\:\/\/\S+`) : ..string.match(line,`hy2\:\/\/\S+`);
 		if( hy ) {
 			var hyUrl = ..inet.url.split(hy)
@@ -736,7 +809,7 @@ importFromString = function(str,subscribeUrl,subps){
 				var outbound = {
 					address = hyUrl.host;
 					port = tonumber(hyUrl.port) : 443;
-					id = hyUrl.user;
+					id = decodeUser(hyUrl.user);
 					network = "hysteria";
 					protocol = "hysteria2";
 					tls = "tls";
@@ -752,6 +825,8 @@ importFromString = function(str,subscribeUrl,subps){
 					if(pin) outbound.pinnedPeerCertSha256 = pin;
 					var insecure = info.insecure : info.allowinsecure;
 					if(insecure !== null) outbound.allowInsecure = (insecure !== "0" && insecure !== "false");
+					if(info.fp) outbound["client-fingerprint"] = info.fp;
+					if(info.alpn) outbound.alpn = info.alpn;
 				}
 
 				if(hyUrl.location){
@@ -766,18 +841,22 @@ importFromString = function(str,subscribeUrl,subps){
 		}
 
 		//ss链接
+// 【模式匹配】匹配 ss 链接并分离备注。[^\s\#]+=不含空白与 # 的主体；<#\S+>? 中 <> 是非捕获分组，? 表示「#+非空白字符」这一段可有可无
 		var ss,comment = ..string.match(line,`ss\:\/\/([^\s\#]+)(<#\S+>?)`);
 		if( ss ) { 
+// 【模式匹配】识别直接在链接中写明的 userinfo@主机:端口。^=串首；([^:]+)=不含冒号的 userinfo；(.+)=主机；\:(\d+)=端口
 			var userinfo,address,port = ..string.match(ss,"^([^:]+)\@(.+)\:(\d+)")	
 			if(!(userinfo&&address&&port)){
 				var str = ..crypt.bin.decodeUrlBase64(ss); 
 				if(str){ ss = str; } 
 
+// 【模式匹配】识别未编码形式的 ss 内容 method:password@主机:端口。^(.+)\:=方法名直到最后一个冒号；(.+)\@=密码直到 @
 				method,password,address,port = ..string.match(ss,"^(.+)\:(.+)\@(.+)\:(\d+)")
 			}
 			else {
 				userinfo = ..crypt.bin.decodeUrlBase64(userinfo); 
 				if(userinfo){
+// 【模式匹配】把 userinfo 拆成 method 与 password。^(.+)\:=方法；(.+)$=其余全部作为密码
 					method,password = ..string.match(userinfo,"^(.+)\:(.+)$")
 				}	
 			}
@@ -795,9 +874,12 @@ importFromString = function(str,subscribeUrl,subps){
 				if(comment){
 					comment = ..string.right(comment,-2);
 					comment = ..inet.url.decode(comment);
+// 【模式匹配】从备注中提取 user@host:port，规则同前
 					var u,h,p = ..string.match(comment,"(.+)\@(.+)\:(\d+)")
 					if(u&&h&&p){
+// 【模式匹配】判断是否 justmysocks 订阅，规则同前
 						if(h && ..string.endWith(h,"jamjams.net") && subscribeUrl && ..string.match(subscribeUrl,"justmysocks\d+\.net")){
+// 【模式匹配】判断是否为 IPv4 格式，规则同前
 							if(..string.match(outbound.address,"^\d+\.\d+\.\d+\.\d+$") ){
 								outbound.address = h;
 							}
@@ -816,6 +898,7 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//trojan链接
+// 【模式匹配】匹配 trojan 链接。trojan\:\/\/=字面 trojan://；\S+=其后所有非空白字符
 		var trojan = ..string.match(line,`trojan\:\/\/\S+`);
 		if( trojan ) {
 			var trojanUrl = ..inet.url.split(trojan) 
@@ -823,7 +906,7 @@ importFromString = function(str,subscribeUrl,subps){
 				var outbound = {
 					address = trojanUrl.host;
 					port = tonumber(trojanUrl.port) : 443; 
-					id = trojanUrl.user;
+					id = decodeUser(trojanUrl.user);
 					network = "tcp";
 					protocol = "trojan"
 				};
@@ -842,8 +925,11 @@ importFromString = function(str,subscribeUrl,subps){
 						}
 					}
 
-					outbound.security = info.encryption;
-					if(info.security && !info.encryption) outbound.tls = info.security;
+					// trojan 链接的 security 表示传输安全（tls/reality/xtls），encryption 才是加密方式。
+					// 原写法在同时带 encryption 参数时会丢掉 TLS，导致往返后节点不可用。
+					var tSec = info.security;
+					if(tSec=="tls" || tSec=="reality" || tSec=="xtls") outbound.tls = tSec;
+					if(info.encryption) outbound.security = info.encryption;
 					if(info.fp) outbound["client-fingerprint"] = info.fp;
 					if(info.alpn) outbound.alpn = info.alpn;
 					var insecure = info.allowinsecure;
@@ -861,6 +947,7 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//trojan-go链接
+// 【模式匹配】匹配 trojan-go 链接，规则同上
 		var trojan = ..string.match(line,`trojan-go\:\/\/\S+`);
 		if( trojan ) {
 			var trojanUrl = ..inet.url.split(trojan) 
@@ -868,7 +955,7 @@ importFromString = function(str,subscribeUrl,subps){
 				var outbound = {
 					address = trojanUrl.host;
 					port = tonumber(trojanUrl.port) : 443; 
-					id = trojanUrl.user;
+					id = decodeUser(trojanUrl.user);
 					network = "tcp";
 					protocol = "trojan-go"
 				};
@@ -904,11 +991,14 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//ssr链接
+// 【模式匹配】匹配 ssr 链接（ssr:// 后为 base64）。[\w=+/-_]+=base64 允许的字符集
 		var ssrBase64 = ..string.match(line,`ssr\:\/\/([\w=+/-_]+)`);
 		if( ssrBase64 ) { 
 			var ssrUrl = ..crypt.bin.decodeUrlBase64(ssrBase64);	
 			if(ssrUrl){
+// 【模式匹配】把 ssr 内容拆成主体与查询参数。(.+)\/\?=主体直到最后一个 斜杠+问号；(.+)=问号后的全部参数
 				var ssrInfo,ssrParam = ..string.match(ssrUrl,"(.+)\/\?(.+)")
+// 【模式匹配】把 ssr 主体按冒号拆成 6 个字段（冒号是字面分隔符，此处不做模式匹配）。依次为 地址、端口、协议、加密、混淆、密码
 				var info = ..string.split(ssrInfo:ssrUrl,':');
 				var outbound = {
 					address = info[1];
@@ -925,7 +1015,7 @@ importFromString = function(str,subscribeUrl,subps){
 					if(params){
 						outbound.ps = ..crypt.bin.decodeUrlBase64(params.remarks);
 						outbound.obfsParam = ..crypt.bin.decodeUrlBase64(params.obfsparam);
-						outbound.protoParam = ..crypt.bin.decodeUrlBase64(params.protoparam);
+						outbound.networkParam = ..crypt.bin.decodeUrlBase64(params.protoparam);
 
 						if(params.group){ 
 							//outbound.subscribeGroup = ..crypt.bin.decodeUrlBase64(params.group);
@@ -946,6 +1036,7 @@ importFromString = function(str,subscribeUrl,subps){
 			}
 		}
 		//socks链接
+// 【模式匹配】匹配 socks5 或 socks 链接。socks5?=socks 后可选的 5；\:=字面冒号；(\/\/\S+)=双斜杠及其后所有非空白字符
 		var socks = ..string.match(line,`socks5?\:(\/\/\S+)`); 
 		if( socks ) { 
 			var socksUrl = ..inet.url.split("socks5:"+socks) 
@@ -958,7 +1049,7 @@ importFromString = function(str,subscribeUrl,subps){
 				};
 
 				if(socksUrl.user && socksUrl.password){
-					outbound.id = socksUrl.user +":"+ socksUrl.password
+					outbound.id = decodeUser(socksUrl.user) ++ ":" ++ decodeUser(socksUrl.password)
 				}  
 
 				if(socksUrl.location){
@@ -972,6 +1063,7 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//http或https链接
+// 【模式匹配】匹配 proxy:// 链接（Clash 中 http(s) 代理的写法）。\S+=全部非空白字符
 		var proxy = ..string.match(line,`proxy\:\/\/\S+`); 
 		if( proxy ) { 
 			var proxyUrl = ..inet.url.split(proxy) 
@@ -1011,7 +1103,15 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 		//http(s) 代理链接（带认证；已在入口转换为 httpproxy:// 内部 scheme，避免与订阅源冲突）
-		var hpScheme,hpUserInfo,hpHost,hpPort = ..string.match(line,`^httppx\:\/\/(https?)\/([^\@]+)\@([^\@\:]+)\:(\d+)`);
+		// http(s) 代理链接（入口已统一转换为 httppx:// 内部 scheme，避免与订阅源冲突）
+		// 先按「带认证」解析，失败再按「无认证」解析
+// 【模式匹配】解析 httppx 内部的带认证形式。^httppx\:\/\/=字面前缀；(https?)=捕获协议名；([^\@\/]+)=不含 @ 与斜杠的认证串；\@=字面 @；([^\@\:]+)=不含 @ 与冒号的主机；\:(\d+)=冒号加端口
+		var hpScheme,hpUserInfo,hpHost,hpPort = ..string.match(line,`^httppx\:\/\/(https?)\/([^\@\/]+)\@([^\@\:]+)\:(\d+)`);
+		if(!hpHost){
+// 【模式匹配】解析 httppx 内部的无认证形式（缺少 认证@ 段），其余规则同上
+			hpScheme,hpHost,hpPort = ..string.match(line,`^httppx\:\/\/(https?)\/([^\@\:]+)\:(\d+)`);
+			hpUserInfo = null;
+		}
 		if( hpHost ) {
 			var outbound = {
 				address = hpHost;
@@ -1019,15 +1119,35 @@ importFromString = function(str,subscribeUrl,subps){
 				network = "tcp";
 				protocol = (..string.lower(hpScheme)=="https") ? "https" : "http";
 			};
-			var u,p = ..string.match(hpUserInfo,"^([^\:]+)\:(.+)$");
-			if(u && p){ outbound.id = ..inet.url.decode(u) ++ ":" ++ ..inet.url.decode(p); }
-			else { outbound.id = ..inet.url.decode(hpUserInfo); }
+			if(hpUserInfo){
+// 【模式匹配】把认证串拆成用户名与密码。^([^\:]+)=串首不含冒号的用户名；\:=字面冒号；(.+)$=其余全部作为密码
+				var u,p = ..string.match(hpUserInfo,"^([^\:]+)\:(.+)$");
+				if(u && p){ outbound.id = decodeUser(u) ++ ":" ++ decodeUser(p); }
+				else { outbound.id = decodeUser(hpUserInfo); }
+			}
+// 【模式匹配】提取 # 之后的备注内容。(.*)$=直到行尾的任意字符（含空串）
+			var hpTag = ..string.match(line,`#(.*)$`);
+			if(hpTag) outbound.ps = ..inet.url.decode(hpTag);
+			// 传输安全 / SNI / 允许不安全证书等附加参数
+			var hpMain = line;
+			var hpHash = ..string.indexOf(hpMain,"#");
+			if(hpHash) hpMain = ..string.left(hpMain,hpHash-1);
+// 【模式匹配】提取 ? 之后的查询串。\?=字面问号（模式里 ? 需转义才表示其本身）；(.*)$=直到行尾
+			var hpQuery = ..string.match(hpMain,`\?(.*)$`);
+			if(hpQuery){
+				var hq = ..inet.url.splitParameters(hpQuery);
+				if(hq.tls) outbound.tls = hq.tls;
+				if(hq.sni) outbound.sni = hq.sni;
+				if(hq.fp) outbound["client-fingerprint"] = hq.fp;
+				if(hq.allowinsecure!==null) outbound.allowInsecure = (hq.allowinsecure!="0" && hq.allowinsecure!="false");
+			}
 			outbound.subscribeUrl = subscribeUrl;
 			..table.push(outbounds,outbound);
 			continue;
 		}
 
 		//naive链接
+// 【模式匹配】匹配 naive 链接。(naive\+(\w+)\:\/\/\S+) 分成三部分：naive\+=字面前缀；\w+=协议名（如 http/https）；\S+=其余非空白字符
 		var naive,naiveNetwork = ..string.match(line,`(naive\+(\w+)\:\/\/\S+)`);
 		if( naive ) {
 			var naiveUrl = ..inet.url.split(naive) 
@@ -1035,7 +1155,7 @@ importFromString = function(str,subscribeUrl,subps){
 				var outbound = {
 					address = naiveUrl.host;
 					port = tonumber(naiveUrl.port) : 443; 
-					id = naiveUrl.user;
+					id = decodeUser(naiveUrl.user);
 					network = naiveNetwork;
 					protocol = "naive"
 				};
@@ -1062,10 +1182,13 @@ importFromString = function(str,subscribeUrl,subps){
 		}
 		//WireGuard 链接（Xray 26.x 原生支持该出站协议）
 		//格式：wireguard://私钥@服务器:端口?publicKey=..&address=..&reserved=1,2,3&mtu=1280#备注
+// 【模式匹配】匹配带查询串的 wireguard 链接。(\S+?)\?=惰性匹配到第一个问号之前；\?=字面问号；(\S+)=问号后所有非空白字符
 		var wg, wgQuery = ..string.match(line,`wireguard\:\/\/(\S+?)\?(\S+)`);
+// 【模式匹配】兜底：匹配不带查询串的 wireguard 链接
 		if(!wg) wg = ..string.match(line,`wireguard\:\/\/(\S+)`);
 		if( wg ) {
 			var wgQueryStr = wgQuery;
+// 【模式匹配】从已捕获的内容里再单独提取查询串，规则同 1172 行
 			if(!wgQueryStr) wgQueryStr = ..string.match(wg,`\?(\S+)`);
 			// 去掉查询串与备注，得到 私钥@服务器:端口
 			var wgMain = wg;
@@ -1074,8 +1197,10 @@ importFromString = function(str,subscribeUrl,subps){
 			var hf = ..string.indexOf(wgMain,"#");
 			if(hf) wgMain = ..string.left(wgMain,hf-1);
 
+// 【模式匹配】把 wireguard 主体拆成 私钥@主机:端口。([^\@]+)=不含 @ 的私钥；([^\:\?\#]+)=不含冒号、问号、井号的主机；\:(\d+)=冒号加端口
 			var wgPriv,wgHost,wgPort = ..string.match(wgMain,`^([^\@]+)\@([^\:\?\#]+)\:(\d+)`);
 			if(!wgHost){
+// 【模式匹配】wireguard 主体不含私钥时的形式：主机:端口
 				wgHost,wgPort = ..string.match(wgMain,`^([^\:\?\#]+)\:(\d+)`);
 			}
 			if(wgHost){
@@ -1097,12 +1222,15 @@ importFromString = function(str,subscribeUrl,subps){
 					if(info.domainstrategy) outbound.domainStrategy = info.domainstrategy;
 					if(info.reserved){
 						var arr = ..table.array();
+// 【模式匹配】逐个提取 reserved 中的所有数字串。gmatch 会循环匹配，\d+=一个以上数字
 						for(n in ..string.gmatch(info.reserved,`\d+`)) ..table.push(arr,tonumber(n));
 						if(#arr) outbound.reserved = arr;
 					}
 					var aips = info.allowedips : info["allowed-ips"];
+// 【模式匹配】按逗号拆分 allowed-ips（逗号是字面分隔符，不做模式匹配）
 					if(aips) outbound["allowed-ips"] = ..string.split(aips,',');
 				}
+// 【模式匹配】提取 # 之后的备注。(\S*)$=行尾的非空白字符（可为空）
 				var wgFrag = ..string.match(line,`\#(\S*)$`);
 				if(wgFrag) outbound.ps = ..inet.url.decode(wgFrag);
 
@@ -1114,6 +1242,7 @@ importFromString = function(str,subscribeUrl,subps){
 
 		//其他协议：Xray 26.x 暂不支持这些协议名，但按协议规范完整导入并保留全部字段；
 		//生成配置时 ensureSupportedOutbound 会自动降级为 blackhole，避免整份配置加载失败。
+// 【模式匹配】匹配其他协议的通用链接。^\s*=开头空白；([a-zA-Z][a-zA-Z0-9\-\.\+]*)=协议名（首字母开头，后可含字母数字与 - . +）；\:\/\/=字面 ://；(\S+)$=其余非空白字符
 		var otherScheme,otherBody = ..string.match(line,`^\s*([a-zA-Z][a-zA-Z0-9\-\.\+]*)\:\/\/(\S+)$`);
 		if(otherScheme){
 			otherScheme = ..string.lower(otherScheme);
@@ -1131,7 +1260,7 @@ importFromString = function(str,subscribeUrl,subps){
 						network = "tcp";
 						protocol = protocolName;
 					};
-					if(oUrl.user) outbound.id = ..inet.url.decode(oUrl.user);
+					if(oUrl.user) outbound.id = decodeUser(oUrl.user);
 					if(oUrl.password) outbound.password = ..inet.url.decode(oUrl.password);
 					if(oUrl.extraInfo){
 						var info = ..inet.url.splitParameters(oUrl.extraInfo);
@@ -1149,6 +1278,7 @@ importFromString = function(str,subscribeUrl,subps){
 
 		//clashJson格式
 		//debug.debug();
+// 【模式匹配】匹配 clash 的 JSON 行。^\s*-\s*=开头空白加减号再加空白；(%\{\})=% 转义后的字面 {}；\s*$=结尾空白
 		var clashJson = ..string.match(line,`^\s*-\s*(%\{\})\s*$`);
 		if( clashJson ) {
 			//debug.debug();
@@ -1199,6 +1329,7 @@ importFromString = function(str,subscribeUrl,subps){
 			}
 		}
 		//json格式
+// 【模式匹配】匹配纯 JSON 对象行。^\s*=开头空白；(%\{\})=字面 {}；\s*$=结尾空白
 		var json = ..string.match(line,`^\s*%\{\}\s*$`);
 		if( json ) {
 			var outbound  = ..web.json.tryParse(json)
@@ -1355,6 +1486,7 @@ try{
 
 	if(!outbound.protocol){
 		outbound.protocol = "vmess";
+// 【模式匹配】查找备注中是否含 @@vless 或 @@xtls 标记。string.find 此处按字面查找，@@ 无模式含义
 		if(outbound.ps && (..string.find(outbound.ps,"@@vless") || ..string.find(outbound.ps,"@@xtls"))){
 			outbound.protocol = "vless";
 		}
@@ -1436,10 +1568,17 @@ try{
 		}
 	} 
 
+	// clash 源里 ws 的自定义 Host 有时以大写键直接挂在顶层，需要归一化到 host
+	if(outbound.Host){
+		if(!outbound.host) outbound.host = outbound.Host;
+		outbound.Host = null;
+	}
+
 	if(outbound.headers){
 		var headers = {};
 		for k,v in ..table.eachName(outbound.headers){ 
-			var k = ..string.replace("HOST","(\a)(\a+)",lambda(a,b) ..string.upper(a) + ..string.lower(b) );
+// 【模式匹配】把 header 键名规范化为首字母大写（例如 HOST 变为 Host）。^(\a)=串首第一个字母；(\a+)$=其余字母直到串尾
+			k = ..string.replace(k,"^(\a)(\a+)$",lambda(a,b) ..string.upper(a) + ..string.lower(b) );
 			headers[k] = v;	
 		}
 		outbound.headers = headers;
@@ -1563,6 +1702,7 @@ var extractLinksFromUrl = function(url){
 
 		// 2. 截取问号前的路径（去掉 ?query=xxx）
 		var pathPart = link;
+// 【模式匹配】查找问号出现的位置。第 4 个参数为 true 表示按字面文本查找；第 3 个参数 1 表示从第 1 个字节开始
 		var pos = ..string.find(link, "?", 1, true);
 		if(pos) pathPart = ..string.left(link, pos - 1);
 
@@ -1602,6 +1742,7 @@ var extractLinksFromUrl = function(url){
 	// 提取 href="..."和href='...'
 	//..debug.log.print(htmlContent);
 	..debug.log.print("[提取链接] 开始匹配 href 属性...");
+// 【模式匹配】从 HTML 中提取 href 链接。href\s*=\s*=href 加可选空白加等号加可选空白；其后用字符类同时允许半角单引号与半角双引号（代码里双引号写成两个连续的双引号），再用括号捕获引号包围的链接内容
 	for link in ..string.gmatch(htmlContent, `href\s*=\s*["']([^"']+)["']`) {
 		addLink(link);          
 	}
@@ -1612,11 +1753,13 @@ var extractLinksFromUrl = function(url){
 	// 3. 提取 href="..."
 	..debug.log.print(htmlContent);
 	..debug.log.print("[提取链接] 开始匹配 href 属性...");
+// 【模式匹配】只提取由半角双引号包围的 href；字符类表示链接内容中不含半角双引号
 	for link in ..string.gmatch(htmlContent, `href\s*=\s*"([^"]+)"`) {
 		addLink(link);          htmlContent, `href\s*=\s*["']([^"']+)["']`
 	}
 
 	// 4. 提取 href='...'
+// 【模式匹配】只提取单引号形式的 href，[^']+=不含单引号的链接内容
 	for link in ..string.gmatch(htmlContent, `href\s*=\s*'([^']+)'`) {
 		addLink(link);
 	}
@@ -1624,6 +1767,7 @@ var extractLinksFromUrl = function(url){
 
 	// 5. 提取纯文本链接
 	..debug.log.print("[提取链接] 开始匹配纯文本链接...");
+// 【模式匹配】提取正文中裸露的网址。捕获 http(s):// 开头，且内容中不含空白、尖括号、半角双引号、半角单引号的字符串
 	for link in ..string.gmatch(htmlContent, `(https?://[^\s<>"']+)`) {
 		if(..string.endWith(link, ".") or ..string.endWith(link, ",")){
 			link = ..string.left(link, #link-1);
@@ -1849,16 +1993,20 @@ importFromClash = function(str,node){
     	
     //	debug.debug()
     	//如果是非table形式的格式转为table格式的
+// 【模式匹配】判断内容中是否含 {}，%\{\} 中的 % 把花括号转义为字面值
     	if( !..string.match(str,"%\{\}") ){
     	    //console.dump(str)
     	    //debug.log.print()
+// 【模式匹配】把换行统一替换为逗号。[<\r\n><\n\r>\r\n]=三个替换项任选其一（尖括号是分组，表示或）
     	    var temp1 = ..string.replace(str,"[<\r\n><\n\r>\r\n]",",");
+// 【模式匹配】把连续的两个逗号替换为 空格逗号空格
     	    temp1 = ..string.replace(temp1,"\,\,"," , "); 
     	    //temp1 = ..string.replace(temp1,"\ ",""); 
     	    //console.dump(temp1) 
     	    //debug.log.print()
     	    
     		//debug.debug()	    
+// 【模式匹配】把 YAML 的短横线列表转成 aardio 表写法。<-\s+>=减号加一个以上空白
     		temp1 = ..string.replace(temp1,"<\-\s+>",'\ \}\n\ \-\ \{');    		
     		//console.dump(temp1)
 			//debug.log.print()
@@ -1873,8 +2021,10 @@ importFromClash = function(str,node){
     	for(line in ..string.lines(str) ){
         	//删除注释字段和空白行
         	line = ..string.splitEx(line,'\#')[1];
+// 【模式匹配】匹配空行。^\s*$=整行只有空白（或为空）
         	if( line===null || ..string.match(line,"^\s*$") ){continue;}
         	//确定proxies范围
+// 【模式匹配】匹配以字母开头的行。^\a=串首为一个字母
         	if(..string.match(line,"^\a")){
 				if(..string.startWith(line,"proxies")){start = true;continue;}
 				else {if(start){break;}continue;}
@@ -1884,9 +2034,13 @@ importFromClash = function(str,node){
 				
 				//debug.debug()
 				
+// 【模式匹配】匹配「- {}」形式的行。^\s*\-\s*=开头空白加减号加空白；(%\{\})=字面 {}；\s*$=结尾空白
 				if( ..string.match(line,"^\s*\-\s*%\{\}\s*$") ){strTemp += line+'\n';}//匹配到-｛｝
+// 【模式匹配】条件取反，即该行不是「- {}」形式
     			elseif( !..string.match(line,"^\s*\-\s*%\{\}\s*$") ){
+// 【模式匹配】取键的缩进量。^(\s*)\a=串首的任意空白加一个字母，外层 # 取捕获组长度
     				var numNow = #(..string.match(line,"^(\s*)\a"));//键缩进量
+// 【模式匹配】取数组项的缩进量。^(\s*)\-=串首的任意空白加一个减号
     				var numANow = #(..string.match(line,"^(\s*)\-"));//数组缩进量
     				//确定数组缩进等级
     				var levelA;
@@ -1898,16 +2052,21 @@ importFromClash = function(str,node){
     				elseif(!levelA && !numANow){levelA=0}
 
     				if( levelA>1 ){
+// 【模式匹配】去掉行首的减号。^\s*(-)=串首空白加一个减号
     					line = ..string.replace(line,"^\s*(-)",'');
+// 【模式匹配】重新计算去掉减号后的缩进量，规则同 2002 行
     					numNow = #(..string.match(line,"^(\s*)\a"));
     				}
     				elseif( levelA==1 ){
     					var temp = '\n-{';
     					if(levelLast){for(i=1;levelLast;1){temp = '}'+temp;}}
+// 【模式匹配】把行首的 减号加空白 替换为指定前缀。^\s*-\s*=串首空白、减号、空白
     					line = ..string.replace(line,"^\s*-\s*",temp);
     				}
 
+// 【模式匹配】匹配「- name:」形式的数组项起始。^\}*\n\-\{\s*\a=可选的右花括号、换行、减号、左花括号、空白、字母
     				if( ..string.match(line,"^\}*\n\-\{\s*\a") ){strTemp += line+","}//-name:1
+// 【模式匹配】匹配单独的「}-」行。^\}\n\-\{\s*$=右花括号、换行、减号、左花括号、结尾空白
     				elseif( ..string.match(line,"^\}\n\-\{\s*$") ){strTemp += line}//-
 
     				levelALast = levelA;
@@ -1917,12 +2076,14 @@ importFromClash = function(str,node){
     				if(!level && numNow){..table.push(levelTable,numNow);level=..table.count(levelTable);}
     				elseif(!level && !numNow){level=0}
 
+// 【模式匹配】匹配「name:」形式的键（值为空）。^\s*\a[^\s\:]*(\:)\s*$=开头空白、字母、非空白非冒号字符、冒号、结尾空白
     				if( ..string.match(line,"^\s*\a[^\s\:]*(\:)\s*$") ){//name:
     					line = ..string.trim(line);
     					if( levelLast>0 && level>levelLast ){strTemp += line+"{"}
     					elseif( level==levelLast ){strTemp += ","+line+"{"}
     					elseif( level<levelLast ){strTemp += "}"+line+"{"}
     				}
+// 【模式匹配】匹配「name:值」形式。^\s*\a[^\:]*\:?\s*[^\s]*\s*$=开头空白、字母、非冒号字符、可选冒号、可选空白、值、结尾空白
     				elseif( ..string.match(line,"^\s*\a[^\:]*\:?\s*[^\s]*\s*$") ){//name:1
     					line = ..string.trim(line);
     					if( levelLast==0 || level>levelLast ){strTemp += line}
@@ -1953,14 +2114,17 @@ importFromClash = function(str,node){
 		for(line in ..string.lines(str) ){
 			//删除注释字段和空白行
         	line = ..string.splitEx(line,'\#')[1];
+// 【模式匹配】匹配空行，规则同 1989 行
         	if( line===null || ..string.match(line,"^\s*$") ){continue;}
         	//确定proxies范围
+// 【模式匹配】匹配以字母开头的行，规则同 1991 行
         	if(..string.match(line,"^\a")){
 				if(..string.startWith(line,"proxy-providers")){start = true;continue;}
 				else {if(start){break;}continue;}
 			}
 
 			if(start){
+// 【模式匹配】取缩进量。^(\s*)[^\s]=串首任意空白加第一个非空白字符
 				var numNow = #(..string.match(line,"^(\s*)[^\s]"));//键缩进量
 				var level;
     			for(index,num in levelTable){if(num=numNow){level=index;break;}}
@@ -1968,6 +2132,7 @@ importFromClash = function(str,node){
     			elseif(!level && !numNow){level=0}
 
     			if(level==2){
+// 【模式匹配】提取「url: http...」中的网址。^\s*url\:\s*=开头空白、url、冒号、空白；(http.*)=以 http 开头直到行尾的内容
     				var url = ..string.match(line,"^\s*url\:\s*(http.*)");
 					url = url ? ..string.trim(url,'"\'\s\t\r\n ');
 					if(..inet.url.is(url)){..table.push(urlmap,url)}

@@ -1479,58 +1479,27 @@ frmXray.btnTcping.oncommand = function(id,event){
 		}
 		
 		
-		//开始配置测速
-		import win
-		import thread.manage;
-		//if (manage) manage.threads={};
-		manage = thread.manage(config.proxy.maxTestServers);//配置最大测速线程
-		var outbounds = config.proxy.outbounds;
-		//debug.log.print("视图数量:"+#items+"服务器数量:"+#outbounds);
-		var listview = frmXray.listview;
-		
-		// 测速前，初始化显示内容
-		try{ 
-			for(i=1;#items;1){
-				// 默认全部允许测速，不允许的话，需要手动勾选
-				//此处“只连接已测通”功能取消，改由frmXray.onStartXrayFailed内实现
-/*
-				if(frmXray.chkJustValid.checked){
-					if(outbounds[i].ps != "已测通"){
-						listview.setItemText("禁止测速",i,7);					
-						continue;
-					}
-				}
-				elseif(frmXray.chkValidNoSearch.checked){
-					if(outbounds[i].autoConnect === false || outbounds[i].ps == "已测通"){
-						listview.setItemText("禁止测速",i,7);
-						continue;
-					}
-				}
-				else{
-					if(outbounds[i].autoConnect === false){
-						listview.setItemText("禁止测速",i,7);
-						continue;
-					}
-				}
-*/
-		
-				listview.setItemText("...",i,7);
-				//listview.setItemText("",i,8);
-				//config.proxy.outbounds[i].lastValiable=tostring(time.now());
-				//console.dump(time.now());
-				//if(config.proxy.outbounds[i].lastValiable) listview.setItemText("上次可用："+config.proxy.outbounds[i].lastValiable,i,8);
-				
-				// 创建测速线程
-				testCount++;
-				manage.create(tcping,frmXray,i,config.proxy.outbounds[i]);
-
-
+		// 跳过全量测速：节点可用性交给「后台搜索」。
+		// 这里只从历史可用节点中挑出候选，然后直接连接第一个。
+		frmXray.validOutbounds = {};
+		for(i=1;#items;1){
+			var ob = config.proxy.outbounds[i];
+			if(ob && ob.address && !ob.failedCount && (ob.ps == "已测通" || ob.lastValiable)){
+				var delay = ob.replyDelay;
+				if(!delay) delay = 2000;
+				table.push(frmXray.validOutbounds,{i;ob.address;delay});
 			}
-			
 		}
-		
-		manage.waitClose(); 
 		isOnRestarting = false;
+
+		if(#frmXray.validOutbounds){
+			var firstValid = frmXray.validOutbounds[1];
+			frmXray.edit.print("跳过测速，直接连接历史可用服务器  列表号:"+firstValid[1]+"  地址:"+firstValid[2]+"  候选数量:"+#frmXray.validOutbounds);
+			switchOutbound(firstValid[1],firstValid[2],true);
+		}
+		else{
+			frmXray.edit.print("没有历史可用服务器，请勾选「开启后台搜索」测试服务器。");
+		}
 		
 		//只把未响应的曾经可用的加进去
 /*

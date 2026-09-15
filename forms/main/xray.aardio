@@ -997,14 +997,15 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 	//只要不是手动模式中定时器检测模式调用，都可选择下一合适节点逻辑
 	//debug.debug();
 	
-	if(#frmXray.validOutbounds){
-		if(frmXray.chkAutoTest.checked || (isManualSwitch && !timerTesting)){
+
+	//	if(frmXray.chkAutoTest.checked || (isManualSwitch && !timerTesting)){
 			
 //	debug.log.print("isManualSwitch:",isManualSwitch,"timerTesting:",timerTesting);	
+
 			timerTesting = true;//手动切换才为false,需要立马切换回来，否则会导致手动模式下不成功则一直切换寻找，如果后续全部不可用，程序会进入死循环。
-			var next = frmXray.validOutbounds[1];
+			var next = null;
 			//给每一个没有延迟数据的节点设默认值
-			if(!config.proxy.outbounds[next[1]].replyDelay ) 	config.proxy.outbounds[next[1]].replyDelay = 2000;	
+		//	if(!config.proxy.outbounds[next[1]].replyDelay ) 	config.proxy.outbounds[next[1]].replyDelay = 2000;	
 			var i;
 			//debug.log.printf("表大小为："+#frmXray.validOutbounds);
 			
@@ -1068,15 +1069,29 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 						}
 				//		debug.log.print(#validAddresses,next[1],next[2]);
 						//	debug.debug();
-						frmXray.edit.print('正在测试服务器列表号:'+next[1]+"，服务器地址:"+next[2]+"，测试延时:"+next[3]+"毫秒，"+"剩余可测数量为："+(#validAddresses-1)+"，服务器总数为:"+#config.proxy.outbounds);
+						frmXray.edit.print('正在测试服务器列表号:'+next[1]+"，服务器地址:"+next[2]+"，测试延时:"+"剩余可测数量为："+(#validAddresses-1)+"，服务器总数为:"+#config.proxy.outbounds);
 						..table.removeByValue(validAddresses,next);
 
 			//			debug.log.print(#validAddresses,next);
 					}	
 				}	
-				else{
+				if(!next){
+					var outer ; 
+					if(!#frmXray.validOutbounds){
+						debug.log.print("运行1");
+						//初始化手动切换服务器用列表
+						frmXray.validOutbounds = {};
+						var i;						
+						for (i= 1;#config.proxy.outbounds;1){				
+							outer = config.proxy.outbounds[i];
+							table.push(frmXray.validOutbounds,{i;outer.address;0});
+													
+						}
+					}
+					next = frmXray.validOutbounds[1];
 				//优先找历史最大下载速度节点
-					if(haveValidAddress){
+					/*
+if(haveValidAddress){
 						var j;
 						for( i=2;#frmXray.validOutbounds;1 ){    
 							j =frmXray.validOutbounds[i];
@@ -1090,9 +1105,10 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 							}
 						}
 				}
+*/
 				
 				//没有再尝试曾成功过的节点
-					if(haveValidAddress && !config.proxy.outbounds[next[1]].downSpeed  ){
+				//	if(haveValidAddress && !config.proxy.outbounds[next[1]].downSpeed  ){
 					var j;
 					for( i=2;#frmXray.validOutbounds;1 ){ 
 						j =frmXray.validOutbounds[i];
@@ -1106,7 +1122,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 							
 						}
 					}
-				}
+			//	}
 				
 /*
 				if(haveValidAddress && !config.proxy.outbounds[next[1]].downSpeed  ){
@@ -1275,12 +1291,14 @@ if(config.proxy.outbounds[next[1]].failedCount) debug.log.print("failedCount为"
 			
 			
 				
-		}		
-	}
+	//	}		
+
+/*
 		else {
 		//	debug.debug();
 			publish("uiCommand.restartxrayCore");
 		}
+*/
 	
 
 	
@@ -1434,7 +1452,7 @@ frmXray.btnTcping.oncommand = function(id,event){
 		var callCount = 0;
 		frmXray.validOutbounds = {};
 	//	debug.log.print("#frmXray.validOutbounds = ",#frmXray.validOutbounds)
-		frmXray.invalidOutbounds = {};//ping无响应节点列表
+	//	frmXray.invalidOutbounds = {};//ping无响应节点列表
 		//延时测试返回函数
 		frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){
 			callCount++;
@@ -1481,24 +1499,32 @@ frmXray.btnTcping.oncommand = function(id,event){
 		
 		// 跳过全量测速：节点可用性交给「后台搜索」。
 		// 这里只从历史可用节点中挑出候选，然后直接连接第一个。
-		frmXray.validOutbounds = {};
+	//	frmXray.validOutbounds = {};
 		for(i=1;#items;1){
 			var ob = config.proxy.outbounds[i];
-			if(ob && ob.address && !ob.failedCount && (ob.ps == "已测通" || ob.lastValiable)){
-				var delay = ob.replyDelay;
-				if(!delay) delay = 2000;
-				table.push(frmXray.validOutbounds,{i;ob.address;delay});
+			if(ob && ob.address && ob.ps == "已测通"){
+			//	var delay = ob.replyDelay;
+			//	if(!delay) delay = 2000;
+				table.push(validAddresses,{i;ob.address});
 			}
 		}
 		isOnRestarting = false;
 
-		if(#frmXray.validOutbounds){
-			var firstValid = frmXray.validOutbounds[1];
-			frmXray.edit.print("跳过测速，直接连接历史可用服务器  列表号:"+firstValid[1]+"  地址:"+firstValid[2]+"  候选数量:"+#frmXray.validOutbounds);
+		if(#validAddresses){
+			var firstValid = validAddresses[1];
+			frmXray.edit.print("直接连接历史可用服务器  列表号:"+firstValid[1]+"  地址:"+firstValid[2]+"  候选数量:"+#frmXray.validOutbounds);
 			switchOutbound(firstValid[1],firstValid[2],true);
 		}
 		else{
-			frmXray.edit.print("没有历史可用服务器，请勾选「开启后台搜索」测试服务器。");
+			for(i=1;#items;1){
+			var ob = config.proxy.outbounds[i];
+			//	var delay = ob.replyDelay;
+			//	if(!delay) delay = 2000;
+				table.push(frmXray.validOutbounds,{i;ob.address});
+				
+			}
+			var firstValid = frmXray.validOutbounds[1];
+			switchOutbound(firstValid[1],firstValid[2],true);
 		}
 		
 		//只把未响应的曾经可用的加进去
@@ -3084,7 +3110,7 @@ frmXray.startCertPinFetch = function(){
 	var jobs = ..table.array();
 	for(k,v in ..config.proxy.outbounds){
 		if( v.allowInsecure && !v.pinnedPeerCertSha256 && v.address ){
-			if( (v.certPinFailCount : 0) > 0 ) continue; // 抓取失败过的不再自动重试
+			// 不记录抓取失败信息（不写 certPinFailCount），保证每次启动都重试
 			..table.push(jobs,{index=k;address=v.address;port=v.port : 443;sni=v.sni});
 		}
 	}
@@ -3128,15 +3154,19 @@ frmXray.startCertPinFetch = function(){
 			if(st === true){
 				var r = ..thread.get("certPinResult_" + t);
 				if(r){
+					var changed = false;
 					for(i=1;#r;1){
 						var item = r[i];
 						var ob = ..config.proxy.outbounds[item.index];
 						if(!ob) continue;
-						if(item.sha) ob.pinnedPeerCertSha256 = item.sha;
-						else ob.certPinFailCount = (ob.certPinFailCount : 0) + 1;
+						if(item.sha){
+							ob.pinnedPeerCertSha256 = item.sha;
+							changed = true;
+						}
+
 					}
 					frmXray.certPinDoneCount += #r;
-					..config.proxy.save();
+					if(changed) ..config.proxy.save();
 				}
 				..thread.set("certPinResult_" + t,null);
 				..thread.set("certPinDone_" + t,"processed");

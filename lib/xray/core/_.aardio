@@ -17,6 +17,10 @@ searcherHttpProxyPort = null;
 searcherSocksProxyPorts = null;
 searcherHttpProxyPorts = null;
 searchBatchSize = null;
+// 搜索器槽位数上限：内核按该值一次性预建全部槽位（入站 + 路由规则），
+// 因此「高级配置」调整并发数时无需重启内核（不会中断当前代理连接）。
+// 并发数的有效范围是 1 ~ searcherSlotMax。
+searcherSlotMax = 50;
 // 获取系统代理配置
 getSystemProxyConfig = function(){
     if(!(socksProxyPort&&httpProxPort)){ return null; }//有设置代理就什么也不做，没有就返回null
@@ -104,13 +108,19 @@ restart = function(editor,outbound){
 	searcherHttpProxyPort = inbounds[5].port;
 	
 	// === 多出口并行搜索：生成 N 个搜索器入站端口 ===
-	// 并发数来自配置项 config.proxy.searchBatchSize（可在「高级配置」界面用滑尺调整）
+	// 槽位数上限：内核按该值一次性预建全部搜索器槽位（入站 + 路由规则）。
+	// 这样「高级配置」里调整并发数就无需重启内核 —— 内核配置的槽位数与当前并发数解耦。
 	// 注意：aardio 中 null 参与 > 比较或 math.floor 都会报错，必须先判空归一化
+	var slotMax = tonumber(self.searcherSlotMax);
+	if(!slotMax || slotMax < 1) slotMax = 50;
+	slotMax = ..math.floor(slotMax);
+
+	// 并发数来自配置项 config.proxy.searchBatchSize（可在「高级配置」界面用滑尺调整）
 	var batchSize = tonumber(..config.proxy.searchBatchSize);
 	if(!batchSize || batchSize < 1) batchSize = 10;
-	if(batchSize > 50) batchSize = 50;
+	if(batchSize > slotMax) batchSize = slotMax;
 	batchSize = ..math.floor(batchSize);
-	self.searchBatchSize = batchSize;
+	self.searchBatchSize = batchSize;   // 期望并发数（决定线程池尺寸，可随时调整）
 	
 	searcherSocksProxyPort = tonumber(searcherSocksProxyPort) : 10091;
 	searcherHttpProxyPort = tonumber(searcherHttpProxyPort) : 10092;
@@ -118,9 +128,11 @@ restart = function(editor,outbound){
 	searcherSocksProxyPorts = ..table.array();
 	searcherHttpProxyPorts = ..table.array();
 	// >>>>> SD-BEGIN
-	debug.log.print("[SD] PORT-BEGIN batchSize=",batchSize,"baseSocks=",searcherSocksProxyPort,"baseHttp=",searcherHttpProxyPort,"prcsxray=",tostring(prcsxray));
+	debug.log.print("[SD] PORT-BEGIN batchSize=",batchSize,"slotMax=",slotMax,"baseSocks=",searcherSocksProxyPort,"baseHttp=",searcherHttpProxyPort,"prcsxray=",tostring(prcsxray));
 	// <<<<< SD-END
-	for(i=1;batchSize;1){
+	// 【预分配】槽位按上限 slotMax 一次性建好：内核配置里的槽位数与「当前并发数」解耦，
+	// 于是在「高级配置」里调整并发数只需重建线程池，无需重启内核（不会中断当前代理连接）。
+	for(i=1;slotMax;1){
 		// >>>>> SD-BEGIN
 		var sdWantSocks = searcherSocksProxyPort + (i-1)*2;
 		var sdWantHttp  = searcherHttpProxyPort + (i-1)*2;

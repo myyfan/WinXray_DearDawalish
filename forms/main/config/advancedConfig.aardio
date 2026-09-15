@@ -260,11 +260,12 @@ winform.btnUpdate.oncommand = function(id,event){
 		restartCore = true;
 	}	
 	
-	//后台搜索并发数：会改变内核搜索器槽位数量（入站 + 路由规则），必须重启内核才生效
+	//后台搜索并发数：内核已按 xray.core.searcherSlotMax 预建全部搜索器槽位，
+	//因此这里无需重启内核（不会中断当前代理连接），只需通知搜索模块重建线程池。
 	var newBatchSize = tonumber(winform.tbSearchBatchSize.progressPos);
 	if( newBatchSize && newBatchSize != tonumber(config.proxy.searchBatchSize) ){
 		config.proxy.searchBatchSize = newBatchSize;
-		restartCore = true;
+		publish("config.searchBatchSize.changed",newBatchSize);
 	}
 	
 	if(winform.chkEnableGitConfigGithub.checked!=config.proxy.enableGitConfigGithub){

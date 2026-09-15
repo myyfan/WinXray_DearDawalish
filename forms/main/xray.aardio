@@ -3329,7 +3329,7 @@ frmXray.chkAutoTest.oncommand = function(id,event){
 }
 
 
-//搜索模式
+//后台搜索模式
 /**
 frmXray.chkSearchMode.oncommand = function(id,event){
 	config.proxy.searchMode = frmXray.chkSearchMode.checked;
@@ -3387,8 +3387,8 @@ import thread.works;
 frmXray.searcherPool = null;
 frmXray.searcherPoolSize = 0;
 
-// 线程池并发数上限（与「高级配置 - 后台搜索并发数」滑尺上限保持一致）
-var SEARCHER_POOL_MAX = 50;
+// 线程池并发数上限：唯一来源是 xray.core.searcherSlotMax（内核按该值预建全部搜索器槽位）
+var SEARCHER_POOL_MAX = tonumber(xray.core.searcherSlotMax) : 50;
 
 // 搜索任务工作函数（定义一次，供线程池复用）
 frmXray.searcherWorker = function(taskData) {
@@ -3399,6 +3399,7 @@ frmXray.searcherWorker = function(taskData) {
 	var outbound              = taskData.outbound;
 	var outboundIndex         = taskData.outboundIndex;
 	var slot                  = taskData.slot;
+	var roundId               = taskData.roundId;         // 发起该任务时的轮次编号
 	var searcherHttpProxyPort = taskData.searcherHttpProxyPort;
 
 	// 通过本机搜索器 HTTP 入站端口，经该槽位出站访问测试地址。
@@ -3419,50 +3420,146 @@ frmXray.searcherWorker = function(taskData) {
 		testOk = false;
 	}
 
-	// 将结果回调到主线程处理（slot 用于归还槽位并立即补位）
-	frmXray.onSearcherSucces(outboundIndex, outbound, testOk ? true : false, slot);
+	// 将结果回调到主线程处理（slot 用于归还槽位并立即补位，roundId 用于丢弃过期回调）
+	frmXray.onSearcherSucces(outboundIndex, outbound, testOk ? true : false, slot, roundId);
 };
 
-// 计算当前应有的并发数：以内核实际生成的搜索器槽位数为准（回退到配置项）
+// 计算当前应有的并发数（= 搜索线程池尺寸）
+// 【重要】必须以内核「实际生成的搜索器槽位端口数」为硬上限：
+//   dispatchSearchTask 要求 xray.core.searcherHttpProxyPorts[slot] 存在。
+//   内核按 xray.core.searcherSlotMax 预建了全部槽位，所以正常情况下这个上限不会卡住并发数。
+// 优先读实时配置 config.proxy.searchBatchSize：内核配置里的槽位数已与当前并发数解耦，
+// 因此在「高级配置」里调整并发数后无需重启内核即可立即生效。
 var getSearcherPoolSize = function(){
-	var n = tonumber(xray.core.searchBatchSize);
-	if(!n || n < 1) n = tonumber(config.proxy.searchBatchSize);
+	var n = tonumber(config.proxy.searchBatchSize);
+	if(!n || n < 1) n = tonumber(xray.core.searchBatchSize);
 	if(!n || n < 1) n = 10;
 	if(n > SEARCHER_POOL_MAX) n = SEARCHER_POOL_MAX;
-	return math.floor(n);
+	n = math.floor(n);
+
+	var portN = #xray.core.searcherHttpProxyPorts;
+	if(portN > 0 && n > portN) n = portN;   // 受实际入站端口数限制
+
+	return n;
 };
 
-// 销毁线程池，释放线程与内存（取消勾选后台搜索时调用）
+// 线程池重建中标志：防止 quit() 泵消息期间的重入回调重复重建
+// （重复重建会让内层新建的池被外层的赋值覆盖成 null，池被孤立、任务丢失）
+frmXray.searcherPoolSyncing = false;
+
+// 取当前线程池（只取用，不创建、不销毁）。返回 null 表示当前没有可用线程池。
+frmXray.getSearcherPool = function(){
+	return frmXray.searcherPool;
+};
+
+// 销毁线程池，释放线程与内存（取消勾选后台搜索、内核重启时调用）
 frmXray.destroySearcherPool = function(){
-	if(frmXray.searcherPool){
-		// 不要调用 clear()：其内部 while(_thrdWorking>0) 是无限等待，
-		// 一旦有 worker 卡住（例如上面的 push 死锁）会导致销毁线程池时界面永久卡死。
-		// quit(timeout) 自带超时、会自动清空任务队列与返回值，并用 terminate 兜底，足够安全。
-		frmXray.searcherPool.quit(3000);  // 通知所有线程退出并等待关闭（超时兜底）
-		frmXray.searcherPool = null;
-		frmXray.searcherPoolSize = 0;
-		debug.log.print("searcherPool 已销毁");
-	}
+	var oldPool = frmXray.searcherPool;
+	if(!oldPool) return;
+
+	// 【铁律】必须先断开引用，再调用 quit()：
+	//   quit() 内部用 thread.delay 等待线程退出，在界面线程会泵消息，
+	//   期间在途任务的回调会重入 dispatchSearchTask / onSearcherSlotFree。
+	//   若此时 searcherPool 仍指向「正在销毁的池」，重入会把它再销毁一次，
+	//   并在外层返回后把内层刚创建的新池引用覆盖成 null —— 池被孤立、任务丢失、后台搜索停摆。
+	frmXray.searcherPool = null;
+	frmXray.searcherPoolSize = 0;
+
+	// 不要调用 clear()：其内部 while(_thrdWorking>0) 是无限等待，
+	// 一旦有 worker 卡住会导致销毁线程池时界面永久卡死。
+	// quit(timeout) 自带超时、会自动清空任务队列与返回值，并用 terminate 兜底。
+	oldPool.quit(3000);  // 通知所有线程退出并等待关闭（超时兜底）
+	debug.log.print("searcherPool 已销毁");
 };
 
-// 确保线程池存在且尺寸与内核槽位数一致；尺寸变化时自动重建
+// 在「安全点」确保线程池存在且尺寸与当前并发数一致。
+// 【铁律】有在测任务时（busyCount>0）绝不销毁重建：
+//   quit() 会终止正在测试的 worker，且其内部 thread.delay 会在界面线程泵消息，
+//   导致在途回调与新池的槽位簿记互相污染 ——
+//   表现为「改完并发数后后台搜索不工作，必须重新勾选才恢复」。
+//   此时一律沿用旧池，等本轮跑完（busyCount 归零）后的下一次调用再重建。
 frmXray.ensureSearcherPool = function(){
 	var wantSize = getSearcherPoolSize();
 	if(frmXray.searcherPool && frmXray.searcherPoolSize == wantSize){
 		return frmXray.searcherPool;  // 尺寸匹配，直接复用
 	}
 
-	frmXray.destroySearcherPool();    // 尺寸不符，先销毁旧池
+	// 正在重建（quit 泵消息期间的重入）：直接返回，避免重复创建/孤立线程池
+	if(frmXray.searcherPoolSyncing){
+		return frmXray.searcherPool;
+	}
+
+	// 有在测任务：暂不重建，沿用旧池（下一个安全点会自动按新并发数重建）
+	if(frmXray.searcherPool && frmXray.searcherBusyCount > 0){
+		return frmXray.searcherPool;
+	}
+
+	frmXray.searcherPoolSyncing = true;
+	frmXray.destroySearcherPool();    // 尺寸不符，先销毁旧池（已断开引用，重入安全）
 
 	// 创建线程池会同步创建 wantSize 个线程（约 40ms/个），并发数较大时此处会短暂耗时
 	frmXray.edit.print("正在创建搜索线程池( 并发 " + wantSize + " ) ...");
 
-	frmXray.searcherPool = thread.works(wantSize, frmXray.searcherWorker);
+	// 用 call 包裹：即便创建失败（例如线程数过大导致资源不足），
+	// 也必须复位 searcherPoolSyncing —— 否则该标志永久为 true，线程池再也无法重建。
+// 【坑】call(fn,owner,...) 第 2 个参数是 owner！给普通函数传参必须写 call(fn,null,args...)，
+	// 否则第 1 个实参会被 owner 吃掉，thread.works 的 limit 就收到一个函数
+	// → thread.semaphore 报 CreateSemaphore @2 Expected:number Got:function。
+	var callOk,newPool = call(thread.works, null, wantSize, frmXray.searcherWorker);
+	frmXray.searcherPoolSyncing = false;
+	if(!callOk || !newPool){
+		debug.log.print("searcherPool 创建失败:", tostring(newPool));
+		return null;
+	}
+
+	frmXray.searcherPool = newPool;
 	frmXray.searcherPoolSize = wantSize;
 	debug.log.print("searcherPool 已创建, 并发数 = " + wantSize);
 	debug.log.print("[SD] POOL-CREATE size=",wantSize);  // >>>>> SD
 	return frmXray.searcherPool;
 };
+
+// === 本轮编号（round generation）===
+// 新一轮开始 / 内核重启时递增；每个任务携带发起时的编号回传，编号不一致的回调一律丢弃。
+// 【为什么必须这样做】上一轮（或内核重启前）的遗留回调若照常执行，会改写新一轮的
+// searcherSlots / searcherBusyCount，并可能在仍有任务在途时提前解锁 searchingBackground，
+// 导致定时器开出重复轮次、槽位簿记彻底错乱 —— 这就是「后台搜索突然不工作」的根因之一。
+frmXray.searcherRoundId = 0;
+
+// 结束当前搜索轮次并释放线程池：下一次定时器 tick（≤1 秒）会按新的并发数重新开始。
+// 【调用时机】内核重启、以及在「高级配置」里调整后台搜索并发数。
+// 【顺序很重要】必须先释放线程池、最后才解锁 searchingBackground：
+//   destroySearcherPool() 内部的 quit() 会在一旁泵消息，若此时已解锁，
+//   定时器会立刻开出新轮次，与销毁过程互相踩踏。
+frmXray.resetSearcherRound = function(reason){
+	var rid = frmXray.searcherRoundId;
+	if(!rid) rid = 0;
+
+	frmXray.searcherWatchdogTick = time.tick();    // 先刷新看门狗时间戳，避免 quit() 期间被误触发
+	frmXray.destroySearcherPool();                 // 释放旧池（此时 searchingBackground 仍为 true）
+	frmXray.searcherRoundId = rid + 1;             // 旧一轮的在途回调全部作废
+	frmXray.searcherBusyCount = 0;
+	frmXray.searcherSlots = {};
+	frmXray.searcherPoolSize = 0;                  // 强制下一轮按新并发数重建
+	thread.set("searchingBackground",false);       // 最后解锁：下一次定时器 tick 开始新轮次
+	debug.log.print(tostring(reason),"：已释放搜索线程池，下一轮将按新的并发数重建");
+};
+
+// 内核重启后，搜索器入站端口全部变化，旧一轮的在途任务全部作废。
+subscribe("xrayCore.restarted", function(socksProxyPort,httpProxyPort){
+	frmXray.resetSearcherRound("内核已重启");
+});
+
+// 「高级配置」调整后台搜索并发数。
+// 内核已按 xray.core.searcherSlotMax 预建全部搜索器槽位，因此这里无需重启内核
+// （不会中断当前代理连接），只要重建线程池即可立即生效。
+subscribe("config.searchBatchSize.changed", function(newBatchSize){
+	var n = tonumber(newBatchSize);
+	if(n && n >= 1){
+		xray.core.searchBatchSize = n;
+	}
+	frmXray.resetSearcherRound("后台搜索并发数已调整");
+});
 
 // === 滚桶式调度（barrel / rolling scheduling）===
 // 旧实现是「整批等待」：一次派发 N 个节点，等这一批全部测完才派发下一批。
@@ -3508,6 +3605,16 @@ frmXray.dispatchSearchTask = function(slot){
 	if(!proxyPort){ 
 		debug.log.print("[SD] D-SLOT slot=",slot,"FAIL 无入站端口 httpPorts=",#xray.core.searcherHttpProxyPorts);  // >>>>> SD
 		return false; 
+	}
+
+	// 【重要】此处只「取用」线程池，绝不创建 / 销毁：
+	// 线程池的重建只在轮次开始的安全点进行（chkSearchMode.oncommand → ensureSearcherPool）。
+	// 若在本函数（可能运行于 worker 回调中）里销毁重建线程池，会与在途任务互相踩踏。
+	// 线程池尚未就绪时直接返回：既不推进节点游标，也不把好节点误计为失败。
+	var pool = frmXray.getSearcherPool();
+	if(!pool){
+		debug.log.print("[SD] D-SLOT slot=",slot,"FAIL 线程池未就绪");  // >>>>> SD
+		return false;
 	}
 
 	var slotTag = "proxySearcher_" + slot;
@@ -3559,11 +3666,12 @@ frmXray.dispatchSearchTask = function(slot){
 				//   的回调再泵进来递归 push → UI 线程与全部 worker 互锁死，后台搜索彻底停摆。
 				//   pushAsync 不等待空闲线程、直接入队返回，从根上消除死锁；且滚桶式调度只在
 				//   「有任务完成」时才补位，在途任务数天然不会超过 worker 数，无需 push 的背压。
-				var sdPushOk = frmXray.ensureSearcherPool().pushAsync({  // >>>>> SD
+				var sdPushOk = pool.pushAsync({  // >>>>> SD
 					frmXray = frmXray;
 					outbound = node;
 					outboundIndex = nodeIndex;
 					slot = slot;
+					roundId = frmXray.searcherRoundId;   // 携带本轮编号：过期回调会被 onSearcherSucces 丢弃
 					searcherHttpProxyPort = proxyPort;
 				});
 				if(!sdPushOk){  // >>>>> SD
@@ -3626,7 +3734,7 @@ frmXray.onSearcherSlotFree = function(slot){
 	}
 };
 
-//后台搜索模式开启
+//后台搜索模式开启复选框
 frmXray.chkSearchMode.oncommand = function(id,event){
     config.proxy.searchMode = frmXray.chkSearchMode.checked;
     config.proxy.searcherIndex = frmXray.searcherIndex;
@@ -3692,6 +3800,19 @@ frmXray.chkSearchMode.oncommand = function(id,event){
         frmXray.searcherBusyCount = 0;
         frmXray.searcherWatchdogTick = time.tick();
         thread.set("searchingBackground",true);
+
+        // 【安全点】递增本轮编号：上一轮（或内核重启前）遗留的回调会被 onSearcherSucces 丢弃，
+        // 不会改写本轮的 searcherSlots / searcherBusyCount（这是后台搜索突然停摆的根因之一）。
+        frmXray.searcherRoundId = (frmXray.searcherRoundId ? frmXray.searcherRoundId : 0) + 1;
+
+        // 【安全点】此处本轮 busyCount 刚归零、且尚无任务在途，
+        // 是唯一可以安全创建/重建线程池的时机 ——「高级配置」改动并发数后即在此生效。
+        if(!frmXray.ensureSearcherPool()){
+            frmXray.searcherBusyCount = 0;
+            thread.set("searchingBackground",false);
+            frmXray.edit.print("搜索线程池未就绪，本周期跳过");
+            return;
+        }
 
         var dispatched = 0;
         // >>>>> SD-BEGIN
@@ -3954,7 +4075,16 @@ if(xray.protocols.isStandalone(outbound.protocol) ){
 }
 **/
 
-frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot){
+frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot,roundId){
+	// 【关键】丢弃过期回调：内核重启 / 新一轮开始时轮次编号会递增，
+	// 上一轮（或内核重启前）的在途任务返回时编号已不匹配。
+	// 若照常执行，会改写新一轮的 searcherSlots / searcherBusyCount，
+	// 并可能在仍有任务在途时提前解锁 searchingBackground，
+	// 导致定时器开出重复轮次、槽位簿记错乱 —— 后台搜索突然停摆的根因之一。
+	if(roundId && roundId != frmXray.searcherRoundId){
+		return;
+	}
+
 	// 滚桶式调度：首先归还槽位并立即补位下一个待测节点。
 	// 必须放在函数最前面 —— 无论后续走哪个分支（含提前 return），槽位都不会泄漏。
 	frmXray.onSearcherSlotFree(slot);
@@ -4020,8 +4150,8 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot){
 	
 	
 }
-//已测通不参加搜索 响应函数
-//debug.log.print("")
+
+//已测通不参加搜索复选框 响应函数
 frmXray.chkValidNoSearch.oncommand = function(id,event){
 	 config.proxy.chkValidNoSearch=frmXray.chkValidNoSearch.checked;
 /*
@@ -4032,7 +4162,7 @@ frmXray.chkValidNoSearch.oncommand = function(id,event){
 */
 }
 
-//仅已测通
+//仅连接已测通复选框
 frmXray.chkJustValid.oncommand = function(id,event){
 	config.proxy.chkJustValid=frmXray.chkJustValid.checked;
 	if(frmXray.chkJustValid.checked) {

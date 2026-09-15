@@ -117,7 +117,13 @@ exportSharedLinks = function(outbounds){
 
 			var info = {};
 			if(outbound.network!="tcp") info.type = outbound.network ;
-			if(outbound.security!="none") info.encryption = outbound.security; 
+			// 注意：security 在部分订阅源里表示「传输安全」（tls/reality/xtls），
+			// 不能直接当成 VLESS 的 encryption 导出，否则分享链接会带上非法 encryption，
+			// 被别的客户端导入后同样会导致内核拒绝加载整份配置。
+			// 用与生成配置一致的解析逻辑，导出即顺带修正脏数据（导出后再导入可自愈）。
+			import xray.core.configJson;
+			var vlessEnc = ..xray.core.configJson.resolveVlessEncryption(outbound);
+			if(vlessEnc != "none") info.encryption = vlessEnc;
 			if(outbound.tls) info.security = outbound.tls;
 			if(outbound.flow) info.flow = outbound.flow;
 			if(outbound.allowInsecure) info.allowInsecure = outbound.allowInsecure;

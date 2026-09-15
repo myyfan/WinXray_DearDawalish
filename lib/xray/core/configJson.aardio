@@ -98,6 +98,36 @@ isReality = function(outbound){
 	return normalizeRealityKey(firstString(outbound["public-key"])) ? true : false;
 };
 
+/* ============================================================
+   VLESS encryption 安全解析
+   Xray 的 VLESS 账号 encryption 只接受加密方案（none / auto /
+   mlkem768x25519plus.* 等）。而部分订阅源会把「传输安全」写成
+   security 键（tls / reality / xtls）；若把它当 encryption 写入，
+   Xray 会拒绝加载【整份】配置：
+     failed to build outbound handler for protocol vless >
+     VLESS users: unsupported "encryption": tls
+   结果是内核直接起不来，而不是单个节点失效。
+   因此这里统一解析：优先协议规范字段 encryption，其次 security，
+   且两者都不能是传输安全值，最终兜底 none。
+   ============================================================ */
+isVlessTransportSecurityValue = function(v){
+	if(type(v)!="string") return false;
+	var t = ..string.lower(..string.trim(v));
+	return (t=="tls" || t=="reality" || t=="xtls");
+};
+
+resolveVlessEncryption = function(outbound){
+	var enc = outbound.encryption;
+	if(type(enc)=="string" && #enc && !isVlessTransportSecurityValue(enc)){
+		return enc;
+	}
+	var sec = outbound.security;
+	if(type(sec)=="string" && #sec && !isVlessTransportSecurityValue(sec) && sec!="auto"){
+		return sec;
+	}
+	return "none";
+};
+
 // 出站（客户端）realitySettings
 buildRealitySettings = function(outbound){
 	return {
@@ -519,7 +549,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 							{  
 								id=outbound.id;
 								flow=outbound.flow : (outbound.tls == "xtls" ? "xtls-rprx-direct" : null);
-								encryption=( (!#outbound.security) || outbound.security=="auto") ? "none" : outbound.security;  
+								encryption=resolveVlessEncryption(outbound);
 								level=outbound.level : 0;
 							}
 						}
@@ -1052,6 +1082,8 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 		// 3. 生成 N 个搜索器入站 + N 条路由规则
 		for(i=1;nSlots;1){
 			..table.push(currentCore.inbounds, {
+				// 搜索器入站：绑定 0.0.0.0 允许局域网内其它电脑作为代理使用。
+				// 注意：这些端口为「无认证」代理，局域网内任何设备均可使用，请确保可信网络环境。
 				listen = "0.0.0.0";
 				port = searcherSocksPorts[i];
 				protocol = "socks";
@@ -1066,6 +1098,8 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 				};
 			});
 			..table.push(currentCore.inbounds, {
+				// 搜索器入站：绑定 0.0.0.0 允许局域网内其它电脑作为代理使用。
+				// 注意：这些端口为「无认证」代理，局域网内任何设备均可使用，请确保可信网络环境。
 				listen = "0.0.0.0";
 				port = searcherHttpPorts[i];
 				protocol = "http";
@@ -1184,7 +1218,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 							{  
 								id=outbound.id;
 								flow=outbound.flow : (outbound.tls == "xtls" ? "xtls-rprx-direct" : null);
-								encryption=( (!#outbound.security) || outbound.security=="auto") ? "none" : outbound.security;  
+								encryption=resolveVlessEncryption(outbound);
 								level=outbound.level : 0;
 							}
 						}

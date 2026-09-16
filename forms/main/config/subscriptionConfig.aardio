@@ -258,12 +258,17 @@ winform.btnUpdate.oncommand = function(id,event){
 		
 	//console.dump(outbondSubscribeUrlMap);
 //	import xray
-	if(!xray.outbounds.updateSubscription(outbondSubscribeUrlMap)){
+	var count = xray.outbounds.updateSubscription(outbondSubscribeUrlMap);
+	if(!count){
 		//winform.btnUpdate.disabledText = null;
 		
 	//	publish("uiCommand.restartxrayCore",outbounds) 
 	}
-	..frmXray.removeRepeat();
+	elseif(count >1000){
+		..frmXray.removeRepeat();
+	}
+	
+	
 	//publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 	winform.btnUpdate.disabledText = null;
 }

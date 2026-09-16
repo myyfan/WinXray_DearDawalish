@@ -2777,6 +2777,7 @@ frmXray.removeRepeat=function(){
 	}
 	//标记重复节点
 	for(i=1;#outbounds;1){
+		if(outbounds[i].repeat) continue;
 		for(j=i+1;#outbounds;1){
 			//if( j<=i ){ continue }
 			if( outbounds[j].address==outbounds[i].address 
@@ -3177,7 +3178,7 @@ frmXray.startCertPinFetch = function(){
 
 					}
 					frmXray.certPinDoneCount += #r;
-					if(changed) ..config.proxy.save();
+				//	if(changed) ..config.proxy.save();
 				}
 				..thread.set("certPinResult_" + t,null);
 				..thread.set("certPinDone_" + t,"processed");

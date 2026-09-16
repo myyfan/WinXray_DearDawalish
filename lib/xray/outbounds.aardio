@@ -270,6 +270,174 @@ var _subscriptionResponseCache = {
 	@{_weak="kv"}
 }
 
+// ==========================================================================
+// 从 sing-box 配置导入节点
+//
+// 参数 @cfg 可以是「已解析好的 sing-box 配置表」（顶层含 outbounds 数组），
+//            也可以是单个出站对象表。
+//
+// 只导入真实节点；下面这些不是节点的类型会被跳过：
+//   direct / block / dns / selector / urltest
+//
+// 字段对应关系（sing-box → 本项目）：
+//   type → protocol    server → address    server_port → port    tag → ps
+//   uuid/password/auth_str → id            method → security      alter_id → alterId
+//   tls.enabled → tls=\"tls\"              tls.server_name → sni  tls.insecure → allowInsecure
+//   tls.alpn → alpn                        tls.utls.fingerprint → client-fingerprint
+//   tls.reality.* → tls=\"reality\" + public-key / short-id
+//   transport.type → network               transport.path → path  transport.headers.Host → host
+//   transport.service_name → grpcSni
+//
+// 返回：本项目的出站数组
+// ==========================================================================
+importFromSingbox = function(cfg){
+
+	if(type(cfg)!=type.table) return ..table.array();
+
+	// 顶层有 outbounds 数组就按配置处理，否则当成单个出站对象
+	var list = cfg[["outbounds"]];
+	if( !(..table.isArrayLike(list) && #list) ){
+		list = ..table.array(cfg);
+	}
+
+	// sing-box 的协议名与本项目基本一致，只有 hysteria(v1) 需要改名
+	var protocolMap = {
+		["hysteria"] = "hysteria1";
+	};
+
+	// 这些不是节点，直接跳过
+	var skipTypes = {
+		["direct"] = true;
+		["block"] = true;
+		["dns"] = true;
+		["selector"] = true;
+		["urltest"] = true;
+	};
+
+	var outbounds = ..table.array();
+
+	for(i=1;#list;1){
+		var ob = list[i];
+		if(type(ob)!=type.table) continue;
+
+		var typ = ob.type;
+		if(type(typ)!=type.string) continue;
+		typ = ..string.lower(typ);
+		if(!#typ || skipTypes[typ]) continue;
+
+		var o = {
+			protocol = protocolMap[typ] : typ;
+			address = ob.server;
+			port = ..tonumber(ob.server_port);
+			network = "tcp";
+		};
+		if(ob.tag) o.ps = ob.tag;
+
+		//---- 各协议的账号/密码 ----
+		if(o.protocol=="vless" || o.protocol=="vmess"){
+			if(ob.uuid) o.id = ob.uuid;
+		}
+		elseif(o.protocol=="trojan"){
+			if(ob.password) o.id = ob.password;
+		}
+		elseif(o.protocol=="shadowsocks"){
+			if(ob.method) o.security = ob.method;
+			if(ob.password) o.id = ob.password;
+		}
+		elseif(o.protocol=="hysteria2" || o.protocol=="hysteria1" || o.protocol=="tuic"){
+			if(ob.password) o.id = ob.password;
+			if(ob.auth_str) o.id = ob.auth_str;
+		}
+
+		//---- 其它协议也尽量把账号取出来（取不到就留空，交给生成端降级处理）----
+		if(!o.id){
+			if(ob.password) o.id = ob.password;
+			elseif(ob.uuid) o.id = ob.uuid;
+			elseif(ob.auth_str) o.id = ob.auth_str;
+		}
+
+		//---- http / socks 代理用「用户名:密码」形式 ----
+		if(o.protocol=="http" || o.protocol=="socks"){
+			if(ob.username && ob.password) o.id = ob.username ++ ":" ++ ob.password;
+			elseif(ob.username) o.id = ob.username;
+			elseif(ob.password) o.id = ob.password;
+		}
+
+		//---- vmess 专有 ----
+		if(o.protocol=="vmess"){
+			if(ob.alter_id) o.alterId = ..tonumber(ob.alter_id);
+			if(ob.security) o.security = ob.security;
+		}
+
+		//---- vless 专有 ----
+		if(o.protocol=="vless"){
+			if(ob.flow) o.flow = ob.flow;
+		}
+
+		//---- hysteria2 的 salamander 混淆 ----
+		if(o.protocol=="hysteria2"){
+			var obfs = ob[["obfs"]];
+			if(type(obfs)==type.table){
+				if(obfs.type) o.obfs = obfs.type;
+				if(obfs.password) o["obfs-password"] = obfs.password;
+			}
+		}
+
+		//---- wireguard ----
+		if(o.protocol=="wireguard"){
+			if(ob.private_key) o["private-key"] = ob.private_key;
+			if(ob.peer_public_key) o["public-key"] = ob.peer_public_key;
+			if(ob.pre_shared_key) o["pre-shared-key"] = ob.pre_shared_key;
+			if(ob.local_address) o["local-address"] = ob.local_address;
+			if(ob.reserved) o.reserved = ob.reserved;
+			if(ob.mtu) o.mtu = ..tonumber(ob.mtu);
+			if(ob.peers) o.peers = ob.peers;
+		}
+
+		//---- 其它通用字段 ----
+		if(ob.packet_encoding) o.packetEncoding = ob.packet_encoding;
+
+		//---- TLS / REALITY / uTLS 指纹 ----
+		var tls = ob[["tls"]];
+		if(type(tls)==type.table && tls.enabled){
+			o.tls = "tls";
+			if(tls.server_name) o.sni = tls.server_name;
+			if(tls.insecure) o.allowInsecure = true;
+			if(tls.alpn) o.alpn = tls.alpn;
+
+			var utls = tls[["utls"]];
+			if(type(utls)==type.table && utls.fingerprint) o["client-fingerprint"] = utls.fingerprint;
+
+			var reality = tls[["reality"]];
+			if(type(reality)==type.table && reality.enabled){
+				o.tls = "reality";
+				if(reality.public_key) o["public-key"] = reality.public_key;
+				if(reality.short_id) o["short-id"] = reality.short_id;
+			}
+		}
+
+		//---- 传输层 ----
+		var tr = ob[["transport"]];
+		if(type(tr)==type.table){
+			if(tr.type) o.network = tr.type;
+			if(tr.path) o.path = tr.path;
+			if(tr.host) o.host = tr.host;
+			if(tr.service_name) o.grpcSni = tr.service_name;
+			var hd = tr[["headers"]];
+			if(type(hd)==type.table){
+				var host = hd[["Host"]] : hd[["host"]];
+				if(host) o.host = host;
+			}
+		}
+
+		// 交给统一的规范化/校验逻辑（同时会补全/过滤无效节点）
+		validOutbound(o);
+		if( o.address ) ..table.push(outbounds,o);
+	}
+
+	return outbounds;
+}
+
 //导入节点
 importFromString = function(str,subscribeUrl,subps){
 	import debug
@@ -462,30 +630,27 @@ importFromString = function(str,subscribeUrl,subps){
     //debug.debug()
     
 //解析json格式
+	//------------------------------------------------------------------
+	// 整体 JSON 解析：只要首字符是 { 或 [ 就整体尝试解析一次
+	// （web.json.tryParse 解析失败会返回 null，所以这样判定是安全的）
+	//
+	// 为什么不再用「含多个 {} 组就排除」的启发式判断：
+	//   那种判断会把 sing-box 这类「天然含大量嵌套对象」的完整配置排除掉，
+	//   导致它永远走不到下面的 JSON 分支。只看首字符既简单又不会漏。
+	//------------------------------------------------------------------
 	var jsonData;
-	var test;
-// 【模式匹配】识别 JSON 数组或对象格式。%\[ 与 %\{ 中的 % 用于把 [ 和 { 转义成字面值；&& 表示两个条件同时成立；!\ 表示取反
-	if( (..string.match(str,"%\[\]") && !..string.match(str,"%\{\}.+%\{\}")) || 
-		(..string.match(str,"%\{\}") && !..string.match(str,"%\{\}.+%\{\}") && !..string.match(str,"-\s*%\{\}")) ){ // 【模式匹配】同上，附加排除条件：避免把同时含多个 {} 的内容误判为 JSON
-/*
-	if(..string.match(str,"%\[\]") || //匹配到[]的内容
-		..string.match(str,"%\{\}") //匹配到{}的内容
-		 ){
-*/
-					
-		//debug.debug();
-		
-		//test = ..string.match(str,"%\[\]");
-		//test = ..string.match(str,"%\{\}")
+	var jsonHead = ..string.trim(str);
+	var jsonFirst = jsonHead[1];
 
-	//如果传参有subscribeUrl
+	if( jsonFirst && (jsonFirst == 0x7B/*{*/ || jsonFirst == 0x5B/*[*/) ){
+		//如果传参有subscribeUrl
 		if(subscribeUrl){
 			var crc32 = ..string.crc32(str);
 			_subscriptionResponseCache[subscribeUrl] = crc32;
 		}
 		jsonData = ..web.json.tryParse(str);
-		
 	}
+	
 	
 //检查传入参数是否是一个数组(表)
 	if( ..table.isArray(jsonData) ){  //是一个数组的话就逐个解析
@@ -495,6 +660,7 @@ importFromString = function(str,subscribeUrl,subps){
 		for(i=#jsonData;1;-1){
 			if( !validOutbound(jsonData[i]) ) {//如果没有解析到节点信息就删除
 				..table.remove(jsonData,i);
+				continue;	// 已经删除，不能再访问 jsonData[i]（删的是最后一项时为 null，赋值会报错）
 			} 
 
 			if(subscribeUrl)jsonData[i].subscribeUrl = subscribeUrl;
@@ -508,6 +674,19 @@ importFromString = function(str,subscribeUrl,subps){
 			
 		//debug.debug();
 		
+		//从 sing-box 配置导入（顶层含 outbounds 数组）
+		if( ..table.isArrayLike(jsonData[["outbounds"]]) && #jsonData[["outbounds"]] ){
+			var sbOutbounds = importFromSingbox(jsonData);
+			if(#sbOutbounds){
+				for(i=1;#sbOutbounds;1){
+					if(subscribeUrl) sbOutbounds[i].subscribeUrl = subscribeUrl;
+					if(subps && type(subps)==type.string) sbOutbounds[i].subps = subps;
+					else sbOutbounds[i].subps = "无订阅";
+				}
+				return sbOutbounds;
+			}
+		}
+
 		if( jsonData[["servers"]] ){//从ss-rust的配置文件添加节点
 
 			var servers = jsonData[["servers"]];
@@ -1403,7 +1582,8 @@ validAll = function(outbounds){
 	return outbounds;
 }
 
-validOutbound = function(outbound){  
+validOutbound = function(outbound){
+	var validResult;	// 统一返回结果（try 块里的 return 退不出本函数）  
 try{	
 	//var outbound = outbound1 
 	if(type(outbound)!="table"){ return;  }
@@ -1641,9 +1821,10 @@ try{
 		//debug.debug();
 		
 	if(outbound.address){
-		//var outer =outbound;
-		return true;  
-		//return outbound;
+		// 注意：aardio 的 try...catch 本质是「立即执行的匿名函数」，
+		// 在 try 里 return 只能退出 try 块自身，退不出 validOutbound 函数，
+		// 所以这里必须把结果赋值给 validResult，最后由函数末尾统一 return。
+		validResult = true;
 	}
 }
 catch () {
@@ -1651,8 +1832,9 @@ catch () {
 	import console
 	//debug.log.print(outbound);
 	//console.dump(outbound)
-		return false;
-		} 
+	validResult = false;
+	} 
+	return validResult;
 }
 
 
@@ -2000,24 +2182,21 @@ updateSubscription = function(outbondSubscribeUrlMap){
         
         
      //   debug.debug();
-     	var c = 0 
+     	
         for k,link in links {
           //  var servers = ..xray.outbounds.importFromString(link);
           debug.log.print(link);
         	..table.append(impOutbounds, ..xray.outbounds.importFromString(link));
-        	c ++;
-        	if (c > 20) break;//只访问前20个，太多了内存不够
-        }
-        
-		//标记重复节点
+        //标记重复节点
 		for(i=1;#impOutbounds;1){
+			if(impOutbounds[i].repeat) continue;
 			for(j=i+1;#impOutbounds;1){
 			//if( j<=i ){ continue }
-			if( impOutbounds[j].address==impOutbounds[i].address 
-				&& impOutbounds[j].port==impOutbounds[i].port ){
-				impOutbounds[j].repeat=true;
+				if( impOutbounds[j].address==impOutbounds[i].address 
+					&& impOutbounds[j].port==impOutbounds[i].port ){
+					impOutbounds[j].repeat=true;
+				}
 			}
-		}
 		}
 		//删除重复节点
 		var removecount=0;
@@ -2027,7 +2206,11 @@ updateSubscription = function(outbondSubscribeUrlMap){
 				removecount++;
 			}
 		}
-		debug.log.print("删除重复服务器",removecount,"个","                            获取",#impOutbounds,"个")	;
+        	if (#impOutbounds > 5000) break;//太多了内存不够
+        }
+        
+
+	//	debug.log.print("删除重复服务器",removecount,"个","                            获取",#impOutbounds,"个")	;
 		
 		
 		
@@ -2040,11 +2223,14 @@ updateSubscription = function(outbondSubscribeUrlMap){
 				}
 			}
 */
-			if(!#impOutbounds) debug.log.print("未从",url,"获取服务器")
+			debug.log.print("从",url,"获得",#impOutbounds,"个服务器");
 			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
 			count = count + #impOutbounds;
 			..table.append(cfgOutbounds,impOutbounds);
 			
+		}
+		else{
+			debug.log.print("未从",url,"获取服务器");
 		}
 	//	if(#..config.proxy.outbounds >15000) ..frmXray.removeRepeat();
 	}
@@ -2328,4 +2514,5 @@ importFromClipboard() = 自剪贴板导入分享链接
 autoUpdateSubscription() = 自动并静默更新订阅源
 updateSubscription() = 更新或自剪贴板导入订阅源\n可选在参数中用一个表自定义要更新的订阅地址,\n参数表中键为url，值为true
 importFromClash(.(str,node) = 从clash文件导入节点或订阅
+importFromSingbox(.(cfg) = 从sing-box配置导入节点\n参数可以是已解析的配置表，也可以是单个出站对象表
 end intellisense**/

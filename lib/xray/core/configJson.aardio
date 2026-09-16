@@ -122,7 +122,7 @@ resolveVlessEncryption = function(outbound){
 		return enc;
 	}
 	var sec = outbound.security;
-	if(type(sec)=="string" && #sec && !isVlessTransportSecurityValue(sec) && sec!="auto"){
+	if(type(sec)=="string" && #sec && !isVlessTransportSecurityValue(sec)){
 		return sec;
 	}
 	return "none";

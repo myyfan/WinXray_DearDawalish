@@ -1657,126 +1657,296 @@ catch () {
 
 
 
-//提取网页链接（硬编码白名单：只提取 .txt 和 .yaml，忽略大小写）
-var extractLinksFromUrl = function(url){
-	
-	// --- 调试日志 ---
-	..debug.log.print("[提取链接] 开始处理 URL: ", url);
+// ==========================================================================
+// 从网页提取订阅链接（两级抓取 + 去重）
+//
+// 第 0 级：访问传入的 url，提取出其中「全部」链接并先去重，避免同一个地址被重复访问。
+// 第 1 级：逐个检查这些链接：
+//         · 末尾命中「后缀白名单」的      → 直接作为结果返回（不再访问）；
+//         · 末尾命中「无关后缀」的        → 直接丢弃（图片/样式/脚本/字体/音视频/压缩包等）；
+//         · 域名命中「二次访问域名名单」的 → 再访问一次该链接，
+//                                          从中提取命中后缀白名单的链接作为结果；
+//         · 其余                          → 丢弃（不访问，避免白白浪费时间）。
+// 最后把两级结果合并、去重后返回。
+//
+// 两个名单都保存在 config.subscribe 里（也就是 config/subscribe.table）：
+//   config.subscribe.linkAllowedExts  —— 订阅地址后缀白名单
+//   config.subscribe.linkVisitDomains —— 需要二次访问的域名名单
+// 可在软件「订阅配置」页面点「链接提取规则」按钮编辑。
+//
+// 参数 @url      起始网址（通常是「列出订阅链接」的网页，也可以是订阅源本身）
+// 参数 @maxFetch 可选，第二级最多访问多少个页面，默认 20（防止链接太多时耗时失控）
+//
+// 返回：去重后的链接数组（都是绝对地址，且末尾命中后缀白名单）
+// ==========================================================================
+var extractLinksFromUrl = function(url,maxFetch){
+	import inet.http;
+	import inet.url;
+	import zlib;	// 导入 zlib 后 inet.http 才能自动解压 gzip 应答
 
-	// 1. 简单校验 URL
-	if(!..string.startWith(url, "http://") and !..string.startWith(url, "https://")){
-		..debug.log.print("[提取链接] 错误：URL 格式不合法");
-		return {}; 
-	}
+	if(type(url)!="string") return [];
+	url = ..string.trim(url);
+	if(!#url) return [];
 
-	// 2. 访问网页获取内容
-	var http = ..inet.http();
-	var htmlContent = http.get(url);
-	http.close();
+	maxFetch = ..tonumber(maxFetch);
+	// 上限：同一批最多「二次访问」多少个页面。
+	// 实测大站（例如 GitHub 仓库页 240KB）每次访问约 2~3 秒，默认取 20 以控制总耗时。
+	if(!maxFetch || maxFetch<1) maxFetch = 20;
+	maxFetch = ..math.floor(maxFetch);
 
-	if(!htmlContent){
-		..debug.log.print("[提取链接] 错误：网页获取失败或内容为空");
-		return {};
-	}
-	else {
-		..debug.log.print("[提取链接] 成功获取网页内容，长度: ", #htmlContent);
-	}
+	//------------------------------------------------------------------
+	// 两个名单：从 config.subscribe 读取
+	// 用直接下标 [[ ]] 取值，config 或其成员不存在时只会返回 null，不会报错
+	//------------------------------------------------------------------
+	var allowedExts = ..config[["subscribe"]][["linkAllowedExts"]];
+	if(type(allowedExts)!="table") allowedExts = [];
 
-	// 准备结果表
-	var resultLinks = {};
-	var linkMap = {};
+	var visitDomains = ..config[["subscribe"]][["linkVisitDomains"]];
+	if(type(visitDomains)!="table") visitDomains = [];
 
-	// ============================================
-	// 【这里定义你需要的后缀名，忽略大小写】
-	// ============================================
-	var allowedExts = {"v2ray"; "clash"; "singbox"; ".txt"; ".html"; ".net"; ".json"; ".yml"; ".yaml"};
+	// 明显无关的后缀（图片/样式/脚本/字体/音视频/压缩包/文档），命中就直接跳过、不访问
+	var skipExts = [
+		".png";".jpg";".jpeg";".gif";".bmp";".webp";".svg";".ico";".tif";".tiff";".avif";".heic";
+		".css";".js";".mjs";".cjs";".map";
+		".woff";".woff2";".ttf";".otf";".eot";
+		".mp3";".wav";".ogg";".mp4";".avi";".mkv";".mov";".webm";".flv";".m4a";".flac";".wma";
+		".zip";".rar";".7z";".gz";".bz2";".xz";".tar";".exe";".msi";".dmg";".apk";".deb";".rpm";".iso";".jar";".bin";
+		".pdf";".doc";".docx";".xls";".xlsx";".ppt";".pptx";".psd"
+	];
 
-	// 内部函数：判断链接是否符合要求
-	var isValidLink = function(link){
-		if(!link) return false;
+	//------------------------------------------------------------------
+	// 内部工具函数
+	//------------------------------------------------------------------
 
-		// 1. 基础过滤（空值、锚点、JS脚本）
-		if(..string.startWith(link,"#") || ..string.startWith(link,"javascript:")){
-			return false;
+	// 取「去掉 ?查询串 与 #锚点 之后」的部分并转小写，用于后缀比较
+	var getPathKey = function(u){
+		var p = u;
+		var pos = ..string.indexOf(p,"?");
+		if(pos) p = ..string.left(p,pos-1);
+		pos = ..string.indexOf(p,"#");
+		if(pos) p = ..string.left(p,pos-1);
+		return ..string.lower(p);
+	};
+
+	// 链接是否命中指定后缀表（忽略大小写）
+	var hitExt = function(exts,u){
+		var p = getPathKey(u);
+		for(i=1;#exts;1){
+			var ext = exts[i];
+			if(type(ext)!="string") continue;
+			ext = ..string.lower(..string.trim(ext));
+			if(#ext && ..string.endWith(p,ext)) return true;
+		}
+		return false;
+	};
+
+	// 规范化名单里写的域名：允许写 github.com、*.github.io、https://github.com/xxx 等写法
+	var normalizeDomain = function(d){
+		if(type(d)!="string") return null;
+		d = ..string.lower(..string.trim(d));
+		if(!#d) return null;
+// 【模式匹配】^https?\:// 表示行首的 http:// 或 https://，冒号必须转义成 \: 才是字面冒号
+		d = ..string.replace(d,"^https?\://","");	// 去掉协议头
+		var pos = ..string.indexOf(d,"/");			// 只保留主机部分
+		if(pos) d = ..string.left(d,pos-1);
+		pos = ..string.indexOf(d,"?");
+		if(pos) d = ..string.left(d,pos-1);
+		pos = ..string.indexOf(d,":");
+		if(pos) d = ..string.left(d,pos-1);
+		if(..string.startWith(d,"*.")) d = ..string.right(d,-3);	// 去掉通配前缀 *.
+		d = ..string.trim(d,". ");
+		return #d ? d : null;
+	};
+
+	// 链接的域名是否命中「二次访问域名名单」（子域名也算命中）
+	var hitDomain = function(u){
+		if(!#visitDomains) return false;
+		var info = ..inet.url.split(u);
+		if(type(info)!="table") return false;
+		var host = ..string.lower(info.host : "");
+		if(!#host) return false;
+		for(i=1;#visitDomains;1){
+			var d = normalizeDomain(visitDomains[i]);
+			if(!d) continue;
+			if(host==d) return true;
+			if(..string.endWith(host,"." ++ d)) return true;
+		}
+		return false;
+	};
+
+	// 把链接规范成绝对地址；无效链接返回 null
+	var normalizeLink = function(raw,baseUrl){
+		if(type(raw)!="string") return null;
+		raw = ..string.trim(raw);
+		if(!#raw) return null;
+
+		// ① 过滤不能抓取的协议与无效链接
+		var lower = ..string.lower(raw);
+		if( ..string.startWith(lower,"#")
+			|| ..string.startWith(lower,"javascript:")
+			|| ..string.startWith(lower,"mailto:")
+			|| ..string.startWith(lower,"tel:")
+			|| ..string.startWith(lower,"data:")
+			|| ..string.startWith(lower,"file:")
+			|| ..string.startWith(lower,"about:")
+			|| ..string.startWith(lower,"blob:")
+			|| ..string.startWith(lower,"ftp:") ){
+			return null;
 		}
 
-		// 2. 截取问号前的路径（去掉 ?query=xxx）
-		var pathPart = link;
-// 【模式匹配】查找问号出现的位置。第 4 个参数为 true 表示按字面文本查找；第 3 个参数 1 表示从第 1 个字节开始
-		var pos = ..string.find(link, "?", 1, true);
-		if(pos) pathPart = ..string.left(link, pos - 1);
+		// ② 还原链接里最常见的 HTML 实体（&amp; → &）
+		raw = ..string.replaceLiteral(raw,"&amp;","&");
+		raw = ..string.replaceLiteral(raw,"&#38;","&");
 
-		// 3. 转小写进行匹配（实现忽略大小写）
-		pathPart = ..string.lower(pathPart);
+		// ③ 拼成绝对地址：
+		//    joinpath 对「相对路径 / 绝对路径 / 协议相对地址 //主机/路径 / 完整 URL」都适用
+		var abs = ..inet.url.joinpath(baseUrl,raw);
+		if(type(abs)!="string" || !#abs) return null;
 
-		// 4. 检查是否以指定后缀结尾
-		for(i=1; #allowedExts; 1){
-			// 后缀也转小写匹配
-			var ext = ..string.lower(allowedExts[i]);
-			if(..string.endWith(pathPart, ext)){
-				return true; // 匹配成功
-			}
+		// ④ 去掉 #锚点（同一个文件的不同锚点没有意义）
+		var pos = ..string.indexOf(abs,"#");
+		if(pos) abs = ..string.left(abs,pos-1);
+
+		// ⑤ 只保留 http/https
+		lower = ..string.lower(abs);
+		if(!..string.startWith(lower,"http://") && !..string.startWith(lower,"https://")) return null;
+
+		return abs;
+	};
+
+	// 从网页内容里提取「全部」原始链接（不做后缀过滤）
+	var collectRawLinks = function(content,list){
+		// ① href="..." 与 href='...'
+// 【模式匹配】href\s*=\s* 是 href 加可选空白、等号、可选空白；["'] 表示半角双引号或单引号；([^"']+) 捕获引号之间不含引号的内容
+		for link in ..string.gmatch(content,`href\s*=\s*["']([^"']+)["']`) {
+			..table.push(list,link);
 		}
-		
-		return false; // 不在白名单内，不要
-	}
 
-	// 内部函数：添加链接
-	var addLink = function(link){
-		link = ..string.trim(link);
-		
-		if(!isValidLink(link)) return;
-
-		if(!linkMap[link]){
-			linkMap[link] = true;
-			..table.push(resultLinks, link);
-
-			// 只打印前 5 条
-			if(#resultLinks <= 50){
-				..debug.log.print("[提取链接] 有效链接: ", link);
+		// ② 正文里裸露的网址（纯文本列表、Markdown 链接都靠这条）
+// 【模式匹配】\: 与 \/ 转义成字面冒号与斜杠（冒号在模式里表示任意多字节字符，必须转义）；[^\s<>"']+ 是一串不含空白、尖括号、引号的字符
+		for link in ..string.gmatch(content,`<https?\:\/\/[^\s<>"']+>`) {
+			// 截掉网址后面粘上的非 ASCII 字符（汉字、中文标点等）
+			var cut;
+			for(i=1;#link;1){
+				var b = link[i];
+				if(b<0x21 || b>0x7E){ cut = i; break; }
 			}
+			if(cut) link = ..string.left(link,cut-1);
+			// 有些网页会把多个网址挤成一串（例如 JSON 里把 \n 写成了 /n），
+			// 这时只保留第一个完整网址：从第 6 个字节之后再遇到 http:// 或 https:// 就截断
+			var cutPos;
+			var hp1 = ..string.indexOf(link,"http://",6);
+			var hp2 = ..string.indexOf(link,"https://",6);
+			if(hp1 && hp2) cutPos = (hp1<hp2) ? hp1 : hp2;
+			elseif(hp1) cutPos = hp1;
+			elseif(hp2) cutPos = hp2;
+			if(cutPos) link = ..string.left(link,cutPos-1);
+			// 去掉末尾粘上的标点
+			link = ..string.trim(link,`.,;:!?)]}"'`);
+			if(#link>8) ..table.push(list,link);
 		}
 	};
 
+	// 结果集（自动去重）
+	var resultLinks = [];
+	var resultMap = {};
+	var addResult = function(link){
+		if(resultMap[link]) return;
+		resultMap[link] = true;
+		..table.push(resultLinks,link);
+	};
 
-	// 提取 href="..."和href='...'
-	//..debug.log.print(htmlContent);
-	..debug.log.print("[提取链接] 开始匹配 href 属性...");
-// 【模式匹配】从 HTML 中提取 href 链接。href\s*=\s*=href 加可选空白加等号加可选空白；其后用字符类同时允许半角单引号与半角双引号（代码里双引号写成两个连续的双引号），再用括号捕获引号包围的链接内容
-	for link in ..string.gmatch(htmlContent, `href\s*=\s*["']([^"']+)["']`) {
-		addLink(link);          
-	}
+	// 把一批原始链接规范化并去重，返回绝对地址数组
+	var collectLinks = function(content,baseUrl){
+		var rawList = [];
+		collectRawLinks(content,rawList);
 
-
-
-/*
-	// 3. 提取 href="..."
-	..debug.log.print(htmlContent);
-	..debug.log.print("[提取链接] 开始匹配 href 属性...");
-// 【模式匹配】只提取由半角双引号包围的 href；字符类表示链接内容中不含半角双引号
-	for link in ..string.gmatch(htmlContent, `href\s*=\s*"([^"]+)"`) {
-		addLink(link);          htmlContent, `href\s*=\s*["']([^"']+)["']`
-	}
-
-	// 4. 提取 href='...'
-// 【模式匹配】只提取单引号形式的 href，[^']+=不含单引号的链接内容
-	for link in ..string.gmatch(htmlContent, `href\s*=\s*'([^']+)'`) {
-		addLink(link);
-	}
-*/
-
-	// 5. 提取纯文本链接
-	..debug.log.print("[提取链接] 开始匹配纯文本链接...");
-// 【模式匹配】提取正文中裸露的网址。捕获 http(s):// 开头，且内容中不含空白、尖括号、半角双引号、半角单引号的字符串
-	for link in ..string.gmatch(htmlContent, `(https?://[^\s<>"']+)`) {
-		if(..string.endWith(link, ".") or ..string.endWith(link, ",")){
-			link = ..string.left(link, #link-1);
+		var list = [];
+		var seen = {};
+		for(i=1;#rawList;1){
+			var callOk,abs = ..call(normalizeLink,null,rawList[i],baseUrl);
+			if(!callOk || !abs) continue;
+			if(seen[abs]) continue;	// 先在本轮内去重，避免后面重复访问
+			seen[abs] = true;
+			..table.push(list,abs);
 		}
-		addLink(link);
+		return list;
+	};
+
+	// 共用一个 HTTP 客户端（自动使用系统代理），并设置超时，避免个别死链把整体拖住
+	var http = ..inet.http();
+	http.setTimeouts(4000,6000,6000);
+
+	var fetchPage = function(u){
+		var callOk,content = ..call(
+			function(){
+				return http.get(u);
+			},null
+		);
+		if(!callOk) return null;
+		if(type(content)!="string") return null;
+		return content;
+	};
+
+	//------------------------------------------------------------------
+	// 第 0 级：抓取起始网址，提取全部链接（已去重）
+	//------------------------------------------------------------------
+	var visitedMap = {};
+	visitedMap[url] = true;
+
+	var pageContent = fetchPage(url);
+	if(!pageContent){
+		..debug.log.print("[提取链接] 抓取失败：",url);
+		return [];
 	}
 
-	..debug.log.print("[提取链接] 处理完成，共提取到有效链接: ", #resultLinks, " 个");
+	var firstLevel = collectLinks(pageContent,url);
+	..debug.log.print("[提取链接]",url,"共提取到唯一链接",#firstLevel,"个");
 
+	//------------------------------------------------------------------
+	// 第 1 级：分类处理
+	//------------------------------------------------------------------
+	var fetchCount = 0;
+	var capWarned;	// 只在首次达到上限时提示一次
+	for(i=1;#firstLevel;1){
+		var link = firstLevel[i];
+
+		// ① 末尾命中后缀白名单 → 直接作为结果，不再访问
+		if( hitExt(allowedExts,link) ){
+			addResult(link);
+			continue;
+		}
+
+		// ② 末尾是明显无关的后缀 → 直接丢弃
+		if( hitExt(skipExts,link) ) continue;
+
+		// ③ 域名不在「二次访问域名名单」里 → 直接丢弃，不访问
+		if( !hitDomain(link) ) continue;
+
+		// ④ 命中域名名单 → 再访问一次，从里面提取后缀白名单链接
+		if(visitedMap[link]) continue;
+		if(fetchCount >= maxFetch){
+			// 注意：达到上限只是不再「二次访问」，
+			// 仍然要继续扫描后面的链接 —— 它们可能直接就命中后缀白名单（那些不需要访问）。
+			if(!capWarned){
+				capWarned = true;
+				..debug.log.print("[提取链接] 第二级访问数量达到上限",maxFetch,"个，后续链接不再二次访问");
+			}
+			continue;
+		}
+		visitedMap[link] = true;
+		fetchCount++;
+
+		var subContent = fetchPage(link);
+		if(!subContent) continue;
+
+		var subLinks = collectLinks(subContent,link);
+		for(j=1;#subLinks;1){
+			if( hitExt(allowedExts,subLinks[j]) ) addResult(subLinks[j]);
+		}
+	}
+
+	..debug.log.print("[提取链接] 处理完成：第二级访问",fetchCount,"个，最终结果",#resultLinks,"个");
 	return resultLinks;
 }
 
@@ -1823,16 +1993,20 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	//debug.debug()
 	var count = 0; 
 	for(url,data in outbondSubscribeUrlMap){
+		debug.log.print("开始从",url,"获取服务器")	;
 		var impOutbounds = ..xray.outbounds.importFromString(url);
-		
+			
         var links = extractLinksFromUrl(url);
         
         
      //   debug.debug();
+     	var c = 0 
         for k,link in links {
           //  var servers = ..xray.outbounds.importFromString(link);
           debug.log.print(link);
         	..table.append(impOutbounds, ..xray.outbounds.importFromString(link));
+        	c ++;
+        	if (c > 20) break;//只访问前20个，太多了内存不够
         }
         
 		//标记重复节点
@@ -1853,7 +2027,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 				removecount++;
 			}
 		}
-		debug.log.print("删除重复服务器",removecount,"个")	;
+		debug.log.print("删除重复服务器",removecount,"个","                            获取",#impOutbounds,"个")	;
 		
 		
 		
@@ -1868,8 +2042,9 @@ updateSubscription = function(outbondSubscribeUrlMap){
 */
 			if(!#impOutbounds) debug.log.print("未从",url,"获取服务器")
 			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
-			..table.append(cfgOutbounds,impOutbounds);
 			count = count + #impOutbounds;
+			..table.append(cfgOutbounds,impOutbounds);
+			
 		}
 	//	if(#..config.proxy.outbounds >15000) ..frmXray.removeRepeat();
 	}
@@ -1880,8 +2055,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	..mainForm.msgOk("已刷新" + count + "个订阅服务器。",1500);
 	debug.log.print("已找到" + count + "个订阅服务器。")
 	..publish("uiCommand.print","已找到" + count + "个订阅服务器。"); 
-	..publish("outbounds.updateConfigJson");
-	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
+//	..publish("outbounds.updateConfigJson");
+//	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
 
 	return count;
 }

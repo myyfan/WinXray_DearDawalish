@@ -140,7 +140,7 @@ restart = function(editor,outbound){
 		searcherSocksProxyPorts[i] = ..wsock.tcp.server.getFreePort("127.0.0.1", sdWantSocks);  // >>>>> SD
 		searcherHttpProxyPorts[i] = ..wsock.tcp.server.getFreePort("127.0.0.1", sdWantHttp);  // >>>>> SD
 		// >>>>> SD-BEGIN
-		debug.log.print("[SD] PORT i=",i,"wantSocks=",sdWantSocks,"gotSocks=",tostring(searcherSocksProxyPorts[i]),"wantHttp=",sdWantHttp,"gotHttp=",tostring(searcherHttpProxyPorts[i]));
+	//	debug.log.print("[SD] PORT i=",i,"wantSocks=",sdWantSocks,"gotSocks=",tostring(searcherSocksProxyPorts[i]),"wantHttp=",sdWantHttp,"gotHttp=",tostring(searcherHttpProxyPorts[i]));
 		// <<<<< SD-END
 	}
 	// >>>>> SD-BEGIN

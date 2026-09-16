@@ -1,0 +1,108 @@
+import win.ui;
+/*DSG{{*/
+var winform = win.form(text="链接提取规则";right=792;bottom=616)
+winform.add(
+btnCancel={cls="button";text="取消";left=520;top=556;right=620;bottom=588;db=1;dr=1;z=6};
+btnReset={cls="button";text="恢复默认值";left=24;top=556;right=140;bottom=588;db=1;dl=1;z=5};
+btnSave={cls="button";text="保存";left=668;top=556;right=768;bottom=588;db=1;dr=1;z=7};
+editDomains={cls="edit";left=24;top=366;right=768;bottom=540;db=1;dl=1;dr=1;edge=1;multiline=1;vscroll=1;z=4};
+editExts={cls="edit";left=24;top=78;right=768;bottom=250;dl=1;dr=1;dt=1;edge=1;multiline=1;vscroll=1;z=2};
+staticDomains={cls="static";left=24;top=266;right=768;bottom=286;dl=1;dr=1;dt=1;transparent=1;z=3};
+staticDomainsNote={cls="static";left=24;top=288;right=768;bottom=362;dl=1;dr=1;dt=1;transparent=1;z=8};
+staticExts={cls="static";left=24;top=14;right=768;bottom=34;dl=1;dr=1;dt=1;transparent=1;z=1};
+staticExtsNote={cls="static";left=24;top=36;right=768;bottom=72;dl=1;dr=1;dt=1;transparent=1;z=9}
+)
+/*}}*/
+
+import config;
+import win.dlg.message;
+win.dlg.message.install();
+
+//------------------------------------------------------------------
+// 说明文字（单引号里 \r\n 是真正的换行）
+//------------------------------------------------------------------
+winform.staticExts.text = "① 订阅地址后缀白名单（每行一个，忽略大小写）";
+winform.staticExtsNote.text = '从网页里提取到的链接，末尾命中这些后缀，就会被当作订阅地址提取出来。\r\n'
+	++ '· 匹配时忽略大小写，并且只比较「?查询串」和「#锚点」之前的部分。\r\n'
+	++ '· 例：填 .txt 时，.../a.txt、.../b.txt?token=1 都会被收录。';
+
+winform.staticDomains.text = "② 需要二次访问的域名名单（每行一个，直接写域名即可）";
+winform.staticDomainsNote.text = '提取到的链接，只有域名命中这个名单，才会被再访问一次，用于从中进一步提取订阅地址。\r\n'
+	++ '· 以该域名【结尾】且用点号分隔才算命中；端口不参与匹配，也不用写 * 号通配。\r\n'
+	++ '· 例：填 app-vpn.github.io 时，下面这些会被二次访问：\r\n'
+	++ '   app-vpn.github.io、sub.app-vpn.github.io、app-vpn.github.io:8080\r\n'
+	++ '   而这些不会被匹配：xxxapp-vpn.github.io（没有点分隔）、github.io（父域名）\r\n'
+	++ '· 每次更新时，同一个网站最多只会再访问 30 个页面，避免大站导航链接太多时耗时过长。';
+
+//------------------------------------------------------------------
+// 默认值（与 lib/config.aardio 里自动填入的默认值保持一致）
+//------------------------------------------------------------------
+var defaultExts = ["v2ray";"clash";"singbox";".txt";".html";".net";".json";".yml";".yaml"];
+var defaultDomains = [];
+
+// 数组 → 「每行一个」的文本
+var listToText = function(arr){
+	var lines = [];
+	if(type(arr)=="table"){
+		for(i=1;#arr;1){
+			var v = arr[i];
+			if(type(v)=="string"){
+				v = ..string.trim(v);
+				if(#v) ..table.push(lines,v);
+			}
+		}
+	}
+	return ..string.join(lines,'\r\n');
+};
+
+// 「每行一个」的文本 → 数组（自动丢弃空行与首尾空白）
+var textToList = function(text){
+	var arr = [];
+	if(type(text)!="string") return arr;
+	// 先统一换行，再按行拆分
+	text = ..string.replace(text,'\r\n','\n');
+	text = ..string.replace(text,'\r','\n');
+	var parts = ..string.split(text,'\n');
+	for(i=1;#parts;1){
+		var v = ..string.trim(parts[i]);
+		if(#v) ..table.push(arr,v);
+	}
+	return arr;
+};
+
+// 打开对话框时载入当前配置
+var loadConfig = function(){
+	winform.editExts.text = listToText(..config.subscribe.linkAllowedExts : defaultExts);
+	winform.editDomains.text = listToText(..config.subscribe.linkVisitDomains : defaultDomains);
+};
+loadConfig();
+
+// 保存到 config.subscribe（配置文件会自动保存）
+winform.btnSave.oncommand = function(id,event){
+	var exts = textToList(winform.editExts.text);
+	if(!#exts){
+		winform.msgWarn("「订阅地址后缀白名单」不能为空，否则提取不到任何订阅地址",2000);
+		return;
+	}
+
+	config.subscribe.linkAllowedExts = exts;
+	config.subscribe.linkVisitDomains = textToList(winform.editDomains.text);
+
+	winform.msgOk("链接提取规则已保存",1000);
+	winform.close();
+}
+
+// 恢复默认值（只是填回编辑框，仍需点「保存」才会生效）
+winform.btnReset.oncommand = function(id,event){
+	winform.editExts.text = listToText(defaultExts);
+	winform.editDomains.text = listToText(defaultDomains);
+}
+
+// 取消
+winform.btnCancel.oncommand = function(id,event){
+	winform.close();
+}
+
+winform.show();
+win.loopMessage();
+return winform;

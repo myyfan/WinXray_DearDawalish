@@ -395,6 +395,7 @@ switchOutbound = function(outboundIndex,outboundAddress,timerTesting){
 	// 如果配置文件中没有对应序号服务器，那么就返回
 	var outbound = config.proxy.outbounds[outboundIndex];
 	if(!outbound || outbound.address != outboundAddress){
+		publish("uiCommand.print","switchOutbound:节点变化，重启内核");
 		publish("uiCommand.restartxrayCore");
 		return ; 
 	} 
@@ -805,7 +806,11 @@ frmXray.autoUpdateSubscription = function(timeout){
 frmXray.onStartXrayComplete = function(outboundIndex,outboundAddress,timerTesting){
 	
 	var outbound = config.proxy.outbounds[outboundIndex];	
-	if (outbound.address != outboundAddress ) return ; 
+	if ( !outbound && outbound.address != outboundAddress ) {
+		publish("uiCommand.print","onStartXrayComplete:节点变化，重启内核");
+		publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速		
+		return 
+	}; 
 	config.proxy.outbounds[outboundIndex].failedCount = 0;//重置失败计数器
 	//frmXray.listview.setItemText("",outboundIndex,8);
 	// 停止自动更新
@@ -910,7 +915,7 @@ if(frmXray.chkSearchMode.checked ) {debug.log.print("chkSearchMode is checked")}
 	
 //	if(!timerTesting) {
 		
-		frmXray.edit.print("正在使用服务器：",address);
+		frmXray.edit.print("正在使用服务器：",address,"总数：",#config.proxy.outbounds);
 		import TrafficStats;
 		TrafficStats.start();//重置流量统计
 		frmXray.trafficStats();//启动流量统计
@@ -958,6 +963,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
     //比对代理数据表是否出现变动，如有变动返回
 	var outbound = config.proxy.outbounds[outboundIndex];
 	if(!(outbound && (outbound.address == outboundAddress))){
+		publish("uiCommand.print","onStartXrayFailed:节点变化，重启内核");
 		publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 	}
 	//如果节点全部无效并开启"异常重新刷新订阅",则刷新订阅
@@ -2178,6 +2184,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 						xray.outbounds.updateSubscription()
 					);
 					frmXray.removeRepeat();//更新所有订阅源后消除重复服务器
+				//	publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 				});
 				
 				popmenu.add(); 				
@@ -2192,6 +2199,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 					if(removecount){
 						frmXray.edit.print("删除了"+removecount+"个节点")
 						}
+					//	publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 				});
 				
 				popmenu.add('清空服务器列表',function(id){
@@ -2277,6 +2285,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 					if(currentIdx){
 						xray.outbounds.updateSubscription({[subscribeUrl]=true});
 						frmXray.removeRepeat();//更新后消除重复服务器
+						publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 					}
 				});	
 			}
@@ -2285,6 +2294,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 				if(currentIdx){
 					xray.outbounds.updateSubscription();
 					frmXray.removeRepeat();//更新所有订阅源后消除重复服务器
+				//	publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 				}
 			});	
 			 
@@ -2325,6 +2335,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 				if(removecount){
 					frmXray.edit.print("删除了"+removecount+"个节点")
 					}
+			//	publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 				});
 				
 			popmenu.add('清空服务器列表',function(id){
@@ -2799,7 +2810,7 @@ frmXray.removeRepeat=function(){
 	//frmXray.listview.setTable(outbounds);//刷新视图
 	debug.log.print("删除重复服务器",removecount,"个");
 //重新测速
-	publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
+	//publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 
 	//继续检测异常
 	frmXray.listChanging = false;
@@ -4110,6 +4121,7 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot,roundId)
 							//outbound.lastValiable=tostring(time.now());
 			outbounds[outboundIndex].lastValiable=tostring(time.now());
 			outbounds[outboundIndex].ps = "已测通";
+			outbounds[outboundIndex].failedCount = 0;
 							//..config.proxy.outbounds[outboundIndex].lastValiable=tostring(time.now());
 							//outbounds[outboundIndex].ps = "已测通";							
 							//outbounds[outboundIndex].failedCount = 0;//重置失败计数器
@@ -4144,7 +4156,8 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot,roundId)
 	}
 	else {
 		// 地址不匹配（配置可能已变动）：重启内核以重新同步出站配置
-		publish("uiCommand.restartxrayCore");
+		publish("uiCommand.print","onStartXrayComplete:节点变化，重启内核");
+		publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速	
 		return false;  
 	}
 	

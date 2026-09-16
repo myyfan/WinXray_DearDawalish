@@ -1,15 +1,16 @@
 import fonts.fontAwesome;
 import win.ui;
 /*DSG{{*/
-var winform = win.form(text="aardio form";right=892;bottom=564;bgcolor=16777215)
+var winform = win.form(text="aardio form";right=892;bottom=564;bgcolor=0xFFFFFF)
 winform.add(
 btnAdd={cls="plus";text="添加订阅";left=10;top=4;right=143;bottom=31;align="left";dl=1;dt=1;font=LOGFONT(h=-15);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF196 ';notify=1;textPadding={left=30};z=5};
+btnLinkRule={cls="plus";text="链接提取规则";left=556;top=512;right=712;bottom=548;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=22}};iconText='\uF0C1';notify=1;textPadding={left=40};z=8};
 btnRemove={cls="plus";text="移除选中订阅";left=143;top=4;right=290;bottom=31;align="left";dl=1;dt=1;font=LOGFONT(h=-15);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF014';notify=1;textPadding={left=30};z=6};
-btnUpdate={cls="plus";text="更新订阅";left=726;top=512;right=848;bottom=548;align="left";bgcolor=11580047;db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=22}};iconText='\uF0C7';notify=1;textPadding={left=40};z=1};
-chkAll={cls="plus";text="全部启用";left=11;top=489;right=118;bottom=520;align="left";bgcolor=16777215;db=1;dl=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=3};
-chkAutoRefreshSubscription={cls="plus";text="允许出站服务器异常自动刷新订阅";left=11;top=524;right=527;bottom=555;align="left";bgcolor=16777215;db=1;dl=1;dr=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=2};
+btnUpdate={cls="plus";text="更新订阅";left=726;top=512;right=848;bottom=548;align="left";bgcolor=0xB0B28F;db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=22}};iconText='\uF0C7';notify=1;textPadding={left=40};z=1};
+chkAll={cls="plus";text="全部启用";left=11;top=489;right=118;bottom=520;align="left";bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=3};
+chkAutoRefreshSubscription={cls="plus";text="允许出站服务器异常自动刷新订阅";left=11;top=524;right=527;bottom=555;align="left";bgcolor=0xFFFFFF;db=1;dl=1;dr=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=2};
 listview={cls="listview";left=10;top=36;right=883;bottom=477;db=1;dl=1;dr=1;dt=1;edge=1;fullRow=1;gridLines=1;z=4};
-static={cls="static";text="双击上面单元格可直接编辑";left=678;top=486;right=848;bottom=507;align="right";color=10789024;db=1;dr=1;transparent=1;z=7}
+static={cls="static";text="双击上面单元格可直接编辑";left=678;top=486;right=848;bottom=507;align="right";color=0xA4A0A0;db=1;dr=1;transparent=1;z=7}
 )
 /*}}*/
 
@@ -260,10 +261,19 @@ winform.btnUpdate.oncommand = function(id,event){
 	if(!xray.outbounds.updateSubscription(outbondSubscribeUrlMap)){
 		//winform.btnUpdate.disabledText = null;
 		
-		publish("uiCommand.restartxrayCore",outbounds) 
+	//	publish("uiCommand.restartxrayCore",outbounds) 
 	}
 	..frmXray.removeRepeat();
+	//publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速
 	winform.btnUpdate.disabledText = null;
+}
+
+//「链接提取规则」按钮：编辑「订阅地址后缀白名单」和「需要二次访问的域名名单」
+winform.btnLinkRule.skin(style.plainButton)
+winform.btnLinkRule.oncommand = function(id,event){
+	var frmChild = winform.loadForm("\forms\main\config\linkRuleConfig.aardio");
+	frmChild.show();
+	frmChild.doModal();
 }
 //启用所有复选框
 winform.chkAll.oncommand = function(id,event){

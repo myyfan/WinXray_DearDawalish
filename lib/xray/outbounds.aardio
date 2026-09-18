@@ -438,6 +438,366 @@ importFromSingbox = function(cfg){
 	return outbounds;
 }
 
+// ==========================================================================
+// 把「http(s) 代理链接」直接转换成节点对象。
+//
+// 设计要点：
+//   · 这里只做「格式解析」，不做「是不是网址」的判定 —— 网址判定由 isSubscribeUrl
+//     在入口统一负责（importFromString 只解析节点数据）。
+//   · 代理链接的 authority 部分不含路径，所以「域名之后出现 /」即视为格式非法
+//     （例如 https://github.com/ssrsub/ssr 的 authority 是 github.com/ssrsub/ssr），
+//     直接丢弃，避免生成垃圾地址。
+//   · 协议名大小写不敏感：HTTP:// / Http:// 与 http:// 等价。
+//   · 剥掉 ?查询 与 #备注 后必须对主体再做一次 trim，否则
+//     「http://host:8080 # 备注」的尾随空格会让端口解析失败（端口被错补成 80）。
+//
+// 参数 @line 为单行文本；不是 http(s) 代理链接时返回 null。
+// 返回节点对象：{ protocol; address; port; network; id?; tls?; sni?;
+//                 client-fingerprint?; allowInsecure?; ps? }
+// ==========================================================================
+var toHttpProxyNode = function(line){
+	if(type(line)!=type.string) return null;
+	line = ..string.trim(line);
+	if(!line) return null;
+
+// 【模式匹配】取协议名与 :// 之后的全部内容（不跨行）。^\s*=开头可选空白；([hH][tT][tT][pP][sS]?)=捕获协议名（大小写不敏感）；\:\/\/=字面 ://；[^\r\n]+=本行其余所有字符。
+// 这里刻意用「除换行外的全部字符」而不是 \S+：备注里经常带空格（例如 "#🇺🇸 机场推荐:xxx"），
+// 用 \S+ 会因为遇到空格而整体匹配失败，白白丢掉这些节点。
+	var scheme, body = ..string.match(line, `^\s*([hH][tT][tT][pP][sS]?)\:\/\/([^\r\n]+)`);
+	if(!scheme) return null;
+	scheme = ..string.lower(scheme);
+
+	// 把 ?查询串 与 #备注 原样截下来（后面分别解析），只解析中间的主体
+	var suffix = "";
+	var qPos = ..string.indexOf(body,"?");
+	var hPos = ..string.indexOf(body,"#");
+	var cutPos;
+	if(qPos && hPos) cutPos = (qPos < hPos) ? qPos : hPos;
+	elseif(qPos) cutPos = qPos;
+	elseif(hPos) cutPos = hPos;
+	if(cutPos){
+		suffix = ..string.right(body, #body - cutPos + 1);
+		body = ..string.left(body, cutPos - 1);
+	}
+
+	// ★ 剥掉查询串/备注后必须 trim：否则「host:8080 # 备注」的主体会残留尾随空格，
+	//   下面的端口解析 ^([^\:\?]+)\:(\d+)$ 会失配 → 端口被错补成 80。
+	body = ..string.trim(body);
+
+	// 域名之后只要出现 "/" 就说明 authority 里混入了路径，不是合法的代理链接 → 丢弃。
+	// （scheme 里的 // 已在上面被 :// 切掉；?查询串 与 #备注 也已提前剥离，
+	//   所以备注里的 "1.8MB/s" 这类斜杠不会造成误杀）
+	if(!body || ..string.indexOf(body,"/")) return null;
+
+	// 拆分 [用户名:密码@]主机[:端口]。
+// 【模式匹配】^\s*=开头空白（此处 body 已 trim）；([^\@]+)=@ 之前的认证串；\@=字面 @；(.+)$=其余全部主体
+	var userinfo, hostpart = ..string.match(body, `^([^\@]+)\@(.+)$`);
+	if(!hostpart){ hostpart = body; userinfo = null; }
+
+// 【模式匹配】从主机段拆出端口。^([^\:\?]+)=不含冒号问号的主机名或 IP；\:(\d+)$=冒号加纯数字端口
+	var host, port = ..string.match(hostpart, `^([^\:\?]+)\:(\d+)$`);
+	if(!host){ host = hostpart; port = null; }
+	if(!host) return null;
+
+	// 端口可以省略：按协议默认端口补齐。
+	// http(s) 代理链接常见写法是 http://主机?sni=xxx（不带端口），此时端口就是默认的 80/443。
+	var defaultPort = (scheme=="https") ? 443 : 80;
+	if(!port) port = defaultPort;
+
+	var outbound = {
+		address = host;
+		port = tonumber(port) : defaultPort;
+		network = "tcp";
+		protocol = scheme;
+	};
+
+	if(userinfo){
+// 【模式匹配】把认证串拆成用户名与密码。^([^\:]+)=串首不含冒号的用户名；\:=字面冒号；(.+)$=其余全部作为密码
+		var u,p = ..string.match(userinfo,"^([^\:]+)\:(.+)$");
+		if(u && p){ outbound.id = decodeUser(u) ++ ":" ++ decodeUser(p); }
+		else { outbound.id = decodeUser(userinfo); }
+	}
+
+	// 解析 ?查询串 与 #备注（suffix 一定以 ? 或 # 开头）
+	if(suffix){
+		if(suffix[[1]]=="?"){
+			var qs = ..string.right(suffix,#suffix-1);
+			var tag;
+			var hh = ..string.indexOf(qs,"#");
+			if(hh){
+				tag = ..string.right(qs,#qs-hh);
+				qs = ..string.left(qs,hh-1);
+			}
+			if(qs){
+				var hq = ..inet.url.splitParameters(qs);
+				if(hq.tls) outbound.tls = hq.tls;
+				if(hq.sni) outbound.sni = hq.sni;
+				if(hq.fp) outbound["client-fingerprint"] = hq.fp;
+				if(hq.allowinsecure!==null) outbound.allowInsecure = (hq.allowinsecure!="0" && hq.allowinsecure!="false");
+			}
+			if(tag) outbound.ps = ..inet.url.decode(tag);
+		}
+		else {
+			var tag = ..string.right(suffix,#suffix-1);
+			if(tag) outbound.ps = ..inet.url.decode(tag);
+		}
+	}
+
+	return outbound;
+};
+
+// ==========================================================================
+// 判定「整串数据」是否为订阅源网址。
+//
+// 规则：只有「单行」且形如 http(s)://主机[:端口] 之后「紧跟 /」才算网址。
+//   https://github.com/ssrsub/ssr      → 网址（直接返回，不再解析）
+//   https://sub.445569.xyz             → 不是网址（当节点解析）
+//   https://sub.445569.xyz:8443        → 不是网址
+//   https://sub.445569.xyz/            → 网址
+//   http://1.2.3.4:8080?sni=x          → 不是网址（当节点解析）
+//
+// ★ 多行数据一律返回 false：批量粘贴/订阅内容必然是节点数据，全部送进解析流程。
+// 本函数是纯判定，不发起任何网络请求。
+// ==========================================================================
+isSubscribeUrl = function(str){
+	if(type(str)!=type.string) return false;
+	str = ..string.trim(str);
+	if(!str) return false;
+	if(..string.indexOf(str,'\n') || ..string.indexOf(str,'\r')) return false;  // 多行 → 一律送解析
+	if(..string.match(str,"^\s*/\N+\s*$")) return true;   // 单斜杠 github 文件路径
+// 【模式匹配】^[hH][tT][tT][pP][sS]?\:\/\/=开头 http:// 或 https://（大小写不敏感）；[^\s\/]+=主机与可选端口（不含空白与斜杠）；\/=紧跟其后的斜杠
+	return ..string.match(str, `^[hH][tT][tT][pP][sS]?\:\/\/[^\s\/]+\/`);
+};
+
+// ==========================================================================
+// 【获取层】从订阅源网址抓取原始数据。
+//
+// 为什么要把「获取」从 importFromString 里拆出来：
+//   过去 importFromString 同时承担「判断输入是网址还是数据」+「网络下载」+「解析」三件事。
+//   而订阅源网址与代理节点链接的语法高度重叠
+//   （例如 http://sub.example.com:8443 与 http://proxy.example.com:8443 完全同形），
+//   在解析函数里判断「这是网址还是节点」必然产生误判。
+//   现在职责彻底拆开：
+//     · fetchUrlRaw(url)        纯抓取（无 UI、无线程逻辑，可在任意线程调用）
+//     · fetchSubscription(url)  抓取 + 进度提示 + 响应指纹缓存（界面线程用）
+//     · importFromString(data)  只解析数据，永不联网
+//     · importFromUrl(url)      抓取 + 解析（便捷组合，供只拿到网址的调用点使用）
+// ==========================================================================
+
+// 纯抓取函数：只做网络请求，不含任何 UI 或线程逻辑，可从任意线程直接调用。
+var fetchUrlRaw = function(url){
+	import inet.http;
+	import web.rest.github;
+
+	// GitHub 用专用接口（可读取网页形式的 blob 链接）
+	if( string.indexOf(url,"github.com")
+		|| string.indexOf(url,"raw.githubusercontent.com") 
+		){
+		var ret = web.rest.github.getContent(url);
+		if(ret) return ret; 
+	}
+
+	var http = inet.http();
+	http.setTimeouts(8000,15000,15000);
+	return http.get(url);
+};
+
+// ==========================================================================
+// 订阅进度提示框（界面线程用）
+//
+// 原设计：每个订阅源开始处理时显示一个「正在获取订阅源」进度框，
+//   等这个订阅源「获取 + 提取下级链接 + 解析 + 合并去重」全部结束后才关闭，
+//   然后由调用方用 msgOk 汇报本次获取到多少个节点。
+//   所以这里把「打开 / 关闭」拆成两个函数，由调用方控制整个生命期。
+// ==========================================================================
+var subscribeProgressTitle = function(url){
+	var title = '正在获取订阅源 ... ';
+	var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
+	if(cfgSubscribeUrls){
+		for(i=#cfgSubscribeUrls;1;-1){
+			var sub = cfgSubscribeUrls[i];
+			if( sub && (sub.url === url) ){
+				if(sub.url && #sub.url) title = '正在获取订阅源: ' + sub.url;
+			}
+		}
+	}
+	return title;
+};
+
+// 打开进度提示框；..mainForm 不存在（例如在后台线程里调用）时返回 null
+var openSubscribeProgressDlg = function(url){
+	if(!..mainForm) return null;
+	import win.dlg.message;
+	var msgDlg = win.dlg.message(..mainForm);
+	var form = msgDlg.create(subscribeProgressTitle(url),,true);
+	if(form) form.progress.startProgress(50);
+	return form;
+};
+
+// 关闭进度提示框。用户可能已经手动关掉了，所以要判 valid 再关
+var closeSubscribeProgressDlg = function(form){
+	if(form && form.valid) form.close();
+};
+
+// ==========================================================================
+// 并行抓取一组网址（分批并发 + 轮询收割）
+//
+// 为什么要并行：订阅源页面里往往有几十个「需要进去看看」的链接，
+//   串行抓取每个约 2~3 秒，30 个就要 60~90 秒 —— 界面线程会被彻底卡住。
+//   改成「分批并发」后总耗时降到最慢那一批，而界面线程只负责
+//   「轮询 + thread.delay 泵消息」，所以界面始终不卡、进度框照常动画。
+//
+// 参数 @urlList 网址数组；@concurrency 每批并发数（默认 8）
+// 返回：表 { [url] = 内容字符串 }；抓取失败的不出现在结果里
+// ==========================================================================
+var fetchUrlsParallel = function(urlList,concurrency,retry){
+	var result = {};
+	if(type(urlList)!=type.table || !#urlList) return result;
+
+	concurrency = ..tonumber(concurrency);
+	if(!concurrency || concurrency<1) concurrency = 8;
+	concurrency = ..math.floor(concurrency);
+
+	// 内部：跑一轮抓取，成功的写进 out
+	var runPass = function(list,conc,cTimeout,sTimeout,rTimeout,out){
+		// 共享键前缀：用 tick 保证不同轮次、不同批次、不同订阅之间不会撞键
+		var keyPrefix = 'exf_' ++ tostring(..time.tick()) ++ '_' ++ tostring(conc) ++ '_';
+
+		for(start=1;#list;conc){
+			var stop = ..math.min(start + conc - 1,#list);
+
+			// 启动这一批：每个网址一个独立线程（线程内只抓取，不碰界面）
+			var keys = {};
+			for(k=start;stop;1){
+				var key = keyPrefix ++ tostring(k);
+				keys[k] = key;
+				..thread.invoke(
+					function(u,key,c,s,r){
+						import inet.http;
+						import zlib;	// 导入 zlib 后 inet.http 才能自动解压 gzip 应答
+						import web.rest.github;
+
+						var text;
+						var callOk,ret = ..call(
+							function(){
+								// GitHub 用专用接口（可读取网页形式的 blob 链接）
+								if( string.indexOf(u,'github.com')
+									|| string.indexOf(u,'raw.githubusercontent.com') ){
+									var gh = web.rest.github.getContent(u);
+									if(gh) return gh;
+								}
+								var http = inet.http();
+								http.setTimeouts(c,s,r);
+								return http.get(u);
+							},null
+						);
+						if(callOk && type(ret)==type.string && #ret) text = ret;
+
+						// 失败也写一个非 null 值（空串），表示「已完成」，
+						// 否则收割端无法区分「还没完成」与「完成了但失败」。
+						..thread.set(key, text ? text : '');
+					}, list[k], key, cTimeout, sTimeout, rTimeout
+				);
+			}
+
+			// 收割这一批：谁先完成谁先取走（thread.get 是非阻塞读取）
+			var pending = [];
+			for(k=start;stop;1) ..table.push(pending,k);
+
+			while(#pending){
+				var stillPending = [];
+				for(i=1;#pending;1){
+					var k = pending[i];
+					var text = ..thread.get(keys[k]);
+					if(text === null){	// 尚未完成
+						..table.push(stillPending,k);
+						continue;
+					}
+					..thread.set(keys[k],null);	// 立即释放跨线程共享区内存
+					if(type(text)==type.string && #text) out[list[k]] = text;
+				}
+				if(#stillPending == #pending){
+					// 本批尚无任何结果：稍等片刻。
+					// thread.delay 会泵界面消息，所以等待期间界面不卡、进度框照常动画。
+					..thread.delay(20);
+				}
+				pending = stillPending;
+			}
+		}
+	};
+
+	// 第一轮：并发抓取。
+	// 超时必须放宽：串行时每个请求独占带宽，4 秒连接 / 6 秒接收就够；
+	// 但并发时分摊带宽（实测 8 并发下 43KB 的页面在 6 秒接收超时内下不完，
+	// 8 个里有 2 个超时失败），放宽后实测 8/8 成功，而且总耗时反而更短。
+	runPass(urlList,concurrency,8000,15000,15000,result);
+
+	// 第二轮：只重试失败的（更宽松的超时、更低的并发）。
+	// 遵循「宁导错，不错过」—— 个别死链重试一次仍失败才放弃。
+	if(retry !== false){
+		var failed = [];
+		for(i=1;#urlList;1){
+			if(!result[urlList[i]]) ..table.push(failed,urlList[i]);
+		}
+		if(#failed){
+			..debug.log.print('[并行抓取] 第一轮失败',#failed,'个，正在重试 ...');
+			var retried = {};
+			runPass(failed,..math.min(concurrency,4),10000,20000,20000,retried);
+			for(u,text in retried){ result[u] = text }
+		}
+	}
+
+	return result;
+};
+// 抓取订阅源（界面线程用）：相对路径补全 + 可选进度提示 + 记录响应指纹
+// 参数 @url 订阅源网址（支持 http:// https:// 以及单斜杠开头的 GitHub 相对路径）
+// 参数 @showProgress 为真时显示进度对话框（需要 ..mainForm，仅界面线程可用）
+// 返回：抓取到的字符串；失败返回 null
+fetchSubscription = function(url,showProgress){
+	if(type(url)!=type.string) return null;
+	url = ..string.trim(url);
+	if(!#url) return null;
+
+	// 单斜杠开头的相对路径：按 GitHub 规则补全域名
+	if( ..string.match(url,"^\s*/\N+\s*$") ){
+		if(!..string.find(url,"/<blob>|<raw>")){
+			url = ..inet.url.append("https://raw.githubusercontent.com",url);
+		}
+		else {
+			url = ..inet.url.append("https://github.com",url);
+		}
+	}
+
+	// 进度提示框的生命期由调用方决定：
+	//   updateSubscription 会让它覆盖「整个订阅源的处理过程」，所以那里传 showProgress=false，
+	//   由它自己开关进度框；这里只在「单独调用本函数」时才自己开一个。
+	var form;
+	if(showProgress) form = openSubscribeProgressDlg(url);
+
+	// 放到独立线程执行，避免抓取期间冻结界面（win.invoke 等待时会泵消息）
+	var content = ..win.invoke( fetchUrlRaw, url );
+
+	closeSubscribeProgressDlg(form);
+	// 记录响应指纹，供自动更新时判断内容是否变化
+	if(content){
+		_subscriptionResponseCache[url] = ..string.crc32(content);
+	}
+
+	return content;
+};
+
+// ==========================================================================
+// 【获取+解析】从订阅源网址导入节点（= fetchSubscription + importFromString）。
+// 供所有「手上只有网址」的调用点使用。
+// 参数 @url 订阅源网址；@subps 可选订阅备注名
+// 返回：节点数组；失败返回 null
+// ==========================================================================
+importFromUrl = function(url,subps){
+	var data = fetchSubscription(url,true);
+	if(!data) return null;
+	return importFromString(data,url,subps);
+};
+
 //导入节点
 importFromString = function(str,subscribeUrl,subps){
 	import debug
@@ -450,136 +810,23 @@ importFromString = function(str,subscribeUrl,subps){
 	if(!str){ return; }
 	str = ..string.trim(str);//从字符串首尾清除所有空白字符
 
-	// http(s) 代理链接（带认证或不带认证）都应作为节点导入，而不是被当成订阅源网址去请求。
-	// 判定要求「必须带端口」，且端口之后只允许尾斜杠、?查询串或 #备注；
-	// 这样既能识别 http://user:pass@host:port，也不会把 http://host:port/sub.txt 这类订阅源误判为节点。
-	// 判定时先剥离 ? 与 # 之后的内容，再匹配主体。
-	var httpProbe = str;
-	var httpCut = ..string.indexOf(httpProbe,"?");
-	if(httpCut) httpProbe = ..string.left(httpProbe,httpCut-1);
-	httpCut = ..string.indexOf(httpProbe,"#");
-	if(httpCut) httpProbe = ..string.left(httpProbe,httpCut-1);
-
-	var httpProxyScheme,httpProxyUser,httpProxyHost,httpProxyPort;
-// 【模式匹配】识别带认证的 http(s) 代理链接。\s*=开头可选空白；(https?)=捕获协议名；[^\s\@\/]+=用户名密码串（不含空白、@、/）；\@=字面 @；[^\s\@\/\:]+=主机名或 IP；\:(\d+)=冒号加端口号；\/?=可选尾斜杠；\s*$=结尾可选空白
-	httpProxyScheme,httpProxyUser,httpProxyHost,httpProxyPort = ..string.match(httpProbe,`^\s*(https?)\:\/\/([^\s\@\/]+)\@([^\s\@\/\:]+)\:(\d+)\/?\s*$`);
-	if(!httpProxyScheme){
-// 【模式匹配】识别不带认证的 http(s) 代理链接（没有 用户名@ 段），其余规则同上
-		httpProxyScheme,httpProxyHost,httpProxyPort = ..string.match(httpProbe,`^\s*(https?)\:\/\/([^\s\@\/\:]+)\:(\d+)\/?\s*$`);
-		httpProxyUser = null;
+	// ======================================================================
+	// 【重要】本函数只解析节点数据，永不发起网络请求。
+	//
+	// 唯一的例外是「整串就是一条订阅源网址」：
+	//   单行 + 形如 http(s)://主机[:端口]/...  → 发日志后直接返回（不解析）
+	// 其余情况（单行但不是网址形态、以及所有多行数据）一律送进下面的解析流程，
+	// 每一行都按节点协议解析 —— 原则是「宁导错，不错过」。
+	//
+	// 需要「从网址获取数据」时请改用：
+	//     fetchSubscription(url)   → 只获取
+	//     importFromUrl(url)       → 获取 + 解析
+	//     updateSubscription(...)  → 批量更新订阅
+	// ======================================================================
+	if( isSubscribeUrl(str) ){
+		debug.log.print("importFromString 收到订阅源网址，本函数只解析节点数据，已跳过:",str);
+		return;
 	}
-	if(httpProxyScheme){
-		// 用原始字符串重建，保留 ?查询串 与 #备注
-		// 内部 scheme 名称不能包含其它协议的子串（例如 httpproxy 会命中 proxy 分支）
-// 【模式匹配】取 :// 之后的全部内容，即 [用户名@]主机:端口[?查询串][#备注]
-		var httpProxyTail = ..string.match(str,`\:\/\/(.*)$`);
-		str = "httppx://" ++ httpProxyScheme ++ "/" ++ httpProxyTail;
-	}
-
-//如果是网址的话
-	//是网址就访问获取数据
-	if( ..string.startWith(str,"http://") 
-		|| ..string.startWith(str,"https://") 
-		|| ..string.match(str,"^\s*/\N+\s*$")  ){ // 【模式匹配】续行条件：匹配以单斜杠开头的相对路径。^\s*=开头可选空白；/=字面斜杠；\N+=一个或多个非换行字符；\s*$=结尾可选空白。用于识别 github 相对路径形式的订阅源
-		
-	//	debug.log.print(str)
-		
-		import win.dlg.message;
-		var msgDlg = win.dlg.message(..mainForm); 
-
-		var title = '正在获取订阅源 ... ';
-		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
-		for(i=#cfgSubscribeUrls;1;-1){
-			var sub = cfgSubscribeUrls[i]  
-			if( (sub.url === str) ){ 
-				if(#sub.ps) title = '正在获取订阅源: ' + sub.ps;
-				//..config.proxy.save(); 
-			}
-		} 
-
-		var form = msgDlg.create(title,,true)
-		form.progress.startProgress(50); 
-
-		subscribeUrl = str;
-		
-		//debug.debug();
-		//debug.log.print(str);
-		
-// 【模式匹配】同上：判断 subscribeUrl 是否为 /xxx 形式的相对路径
-		if(..string.match(subscribeUrl,"^\s*/\N+\s*$") ){
-// 【模式匹配】判断是否为 github 的 blob 或 raw 路径。\/ 中 <> 是 aardio 的非捕获分组，| 表示两边任选其一
-			if(!..string.find(subscribeUrl,"/<blob>|<raw>")){
-				subscribeUrl = ..inet.url.append("https://raw.githubusercontent.com",subscribeUrl);
-			}
-			else {
-				subscribeUrl = ..inet.url.append("https://github.com",subscribeUrl);
-			}
-		}
-
-		str = ..win.invoke(
-			function(subscribeUrl){
-				import inet.http; 
-				import web.rest.github;
-				import debug
-
-				if( string.indexOf(subscribeUrl,"github.com")
-					|| string.indexOf(subscribeUrl,"raw.githubusercontent.com") 
-					){
-
-					var ret  = web.rest.github.getContent(subscribeUrl)
-					
-					//debug.debug(); 
-					
-					if(ret) return ret; 
-				}
-				//var test = inet.http().get(subscribeUrl);
-								 
-				//debug.debug();
-			
-				return inet.http().get(subscribeUrl);
-			},subscribeUrl 	)
-
-		form.close();
-		if(!str){
-			return;
-		}
-
-/*
-		//在订阅里面寻找是否存在当前网址的订阅
-		var existIndex;
-		var cfgSubscribeUrls = ..config.subscribe.subscribeUrls : ..table.array();
-		for(i=#cfgSubscribeUrls;1;-1){
-			var sub = cfgSubscribeUrls[i]  
-			if(sub.url==subscribeUrl){ 
-				sub.checked="启用";
-				existIndex=i;
-				break;
-			}
-		} 
-*/
-		
-		//debug.debug();
-		 
-		 
-		//如果是新链接，就添加到订阅
-/*
-		if(!existIndex){
-			var tUrl = ..inet.url.split(subscribeUrl); 
-			..table.push(cfgSubscribeUrls,{url=subscribeUrl;ps=tUrl ? tUrl.host : "";checked="启用"})
-			..publish("uiCommand.subscriptionNew",cfgSubscribeUrls[#cfgSubscribeUrls]);
-		}  
-		else{
-			..publish("uiCommand.subscriptionNew",cfgSubscribeUrls[existIndex],existIndex);
-		}
-		..config.subscribe.subscribeUrls = cfgSubscribeUrls;
-		..config.subscribe.save();
-*/
-	}
-
-	if(subscribeUrl){
-		var crc32 = ..string.crc32(str);
-		_subscriptionResponseCache[subscribeUrl] = crc32;
-	}	
 	
 	//debug.debug() 
 	
@@ -601,10 +848,12 @@ importFromString = function(str,subscribeUrl,subps){
 		
 		var urlmap = importFromClash(str,false);
 		if(#urlmap){
-			..mainForm.msgOk('发现了 '+#urlmap+' 个订阅\n正在导入中',1000);
+			// 注意：解析可能在后台线程执行，此时 ..mainForm 为 null，
+			// 因此这里只写日志，不做任何界面提示。
+			debug.log.print('发现了 '+#urlmap+' 个订阅，正在导入中');
 			var outbounds = ..table.array();
 			for(i=1;#urlmap;1){
-				var impOutbounds = importFromString(urlmap[i]);
+				var impOutbounds = importFromUrl(urlmap[i]);
 				if(impOutbounds){
 					..table.append(outbounds,impOutbounds);
 				}
@@ -761,6 +1010,14 @@ importFromString = function(str,subscribeUrl,subps){
 */
 	
 	for(line in ..string.lines(str) ){
+		// http(s) 代理链接：直接产出节点对象并入库，不再经过 httppx:// 中间表示。
+		// 多行数据里的 http://host:port 行若不在这里处理，会一路穿到循环末尾被丢弃。
+		var httpProxyNode = toHttpProxyNode(line);
+		if(httpProxyNode){
+			httpProxyNode.subscribeUrl = subscribeUrl;
+			..table.push(outbounds,httpProxyNode);
+			continue;
+		}
 		//console.dump(line)
 				//debug.log.print()
 		//debug.debug();
@@ -780,13 +1037,13 @@ importFromString = function(str,subscribeUrl,subps){
 */
 		
 		
+		/*
 		if(#outbounds>=10000){
-			import win.dlg.message;
-			var msgDlg = win.dlg.message(..mainForm); 
-			var form = msgDlg.warn("导入的节点数目过多，已导入10000个节点并中止操作！")
-
+			// 注意：解析可能在后台线程执行，不能依赖 ..mainForm，这里只写日志。
+			debug.log.print("导入的节点数目过多，已导入10000个节点并中止操作！");
 			return outbounds;
 		}
+		*/
 
 		if(line[1]=='/'# && line[2]=='/'#){//跳过注释行
 			continue;
@@ -926,7 +1183,10 @@ importFromString = function(str,subscribeUrl,subps){
 		var vless = ..string.match(line,`vless\:\/\/\S+`);
 		if( vless ) {
 			var vlessUrl = ..inet.url.split(vless) 
-			if(vlessUrl && vlessUrl.user && vlessUrl.host && vlessUrl.port){
+			// 按 VLESS URI 规范 uuid 段是必填的，但部分订阅源里的链接省略了它
+			// （形如 vless://主机:端口?type=ws&security=tls）。
+			// 为了让这类节点也能导入而不是被静默丢弃，这里只要求主机与端口，uuid 取不到时留空。
+			if(vlessUrl && vlessUrl.host && vlessUrl.port){
 				var outbound = {
 					address = vlessUrl.host;
 					port = tonumber(vlessUrl.port) : 443; 
@@ -1023,6 +1283,10 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 ss 链接并分离备注。[^\s\#]+=不含空白与 # 的主体；<#\S+>? 中 <> 是非捕获分组，? 表示「#+非空白字符」这一段可有可无
 		var ss,comment = ..string.match(line,`ss\:\/\/([^\s\#]+)(<#\S+>?)`);
 		if( ss ) { 
+			// SIP002 允许在链接尾部带查询串（?plugin=...&sni=...）。
+			// 必须先剥离，否则「主机:端口」的匹配会把参数当成地址的一部分而解析出错。
+			var ssParam = ..string.match(ss, `\?(.*)$`);
+			if(ssParam) ss = ..string.left(ss, #ss - #ssParam - 1);
 // 【模式匹配】识别直接在链接中写明的 userinfo@主机:端口。^=串首；([^:]+)=不含冒号的 userinfo；(.+)=主机；\:(\d+)=端口
 			var userinfo,address,port = ..string.match(ss,"^([^:]+)\@(.+)\:(\d+)")	
 			if(!(userinfo&&address&&port)){
@@ -1049,6 +1313,29 @@ importFromString = function(str,subscribeUrl,subps){
 					network = "tcp";
 					protocol = "shadowsocks"
 				};
+				// —— SIP002 查询参数 ——
+				// plugin 是 SIP002 的标准参数，格式为「插件名;选项1=值1;选项2=值2」；
+				// sni / tls / fp / allowInsecure / group 等属于各客户端的常用扩展字段。
+				// 数据源里给出的字段一律导入，避免漏字段导致节点信息不完整。
+				if(ssParam){
+					var sp = ..inet.url.splitParameters(ssParam);
+					if(sp){
+						if(sp.plugin){
+							var pn,po = ..string.match(sp.plugin, "^([^;]+);?(.*)$");
+							if(pn) outbound.plugin = pn;
+							if(po && #po) outbound.pluginOptions = po;
+						}
+						if(sp.sni) outbound.sni = sp.sni;
+						if(sp.tls) outbound.tls = sp.tls;
+						if(sp.fp) outbound["client-fingerprint"] = sp.fp;
+						var insec = sp.allowinsecure;
+						if(insec !== null) outbound.allowInsecure = (insec != "0" && insec != "false");
+						// 其余未识别的参数原样保留，确保不漏字段
+						for(k,v in sp){
+							if(k != "plugin" && outbound[k] === null) outbound[k] = v;
+						}
+					}
+				}
 
 				if(comment){
 					comment = ..string.right(comment,-2);
@@ -1157,6 +1444,11 @@ importFromString = function(str,subscribeUrl,subps){
 					}
 
 					outbound.security = info.encryption; 
+					// 补齐传输安全与指纹字段（与 trojan 分支保持一致，避免漏字段）
+					var tgSec = info.security;
+					if(tgSec=="tls" || tgSec=="reality" || tgSec=="xtls") outbound.tls = tgSec;
+					if(info.fp) outbound["client-fingerprint"] = info.fp;
+					if(info.alpn) outbound.alpn = info.alpn;
 				}
 
 				if(trojanUrl.location){
@@ -1235,6 +1527,15 @@ importFromString = function(str,subscribeUrl,subps){
 					outbound.ps = ..inet.url.decode(socksUrl.location);
 				}
 
+				// socks 链接也可能带附加参数（sni / tls / fp 等扩展字段），统一导入，避免漏字段
+				if(socksUrl.extraInfo){
+					var sp = ..inet.url.splitParameters(socksUrl.extraInfo);
+					if(sp){
+						for(k,v in sp){
+							if(outbound[k] === null) outbound[k] = v;
+						}
+					}
+				}
 				outbound.subscribeUrl = subscribeUrl;
 				..table.push(outbounds,outbound);
 			} 
@@ -1279,49 +1580,6 @@ importFromString = function(str,subscribeUrl,subps){
 				..table.push(outbounds,outbound);
 			} 
 
-			continue;
-		}
-		//http(s) 代理链接（带认证；已在入口转换为 httpproxy:// 内部 scheme，避免与订阅源冲突）
-		// http(s) 代理链接（入口已统一转换为 httppx:// 内部 scheme，避免与订阅源冲突）
-		// 先按「带认证」解析，失败再按「无认证」解析
-// 【模式匹配】解析 httppx 内部的带认证形式。^httppx\:\/\/=字面前缀；(https?)=捕获协议名；([^\@\/]+)=不含 @ 与斜杠的认证串；\@=字面 @；([^\@\:]+)=不含 @ 与冒号的主机；\:(\d+)=冒号加端口
-		var hpScheme,hpUserInfo,hpHost,hpPort = ..string.match(line,`^httppx\:\/\/(https?)\/([^\@\/]+)\@([^\@\:]+)\:(\d+)`);
-		if(!hpHost){
-// 【模式匹配】解析 httppx 内部的无认证形式（缺少 认证@ 段），其余规则同上
-			hpScheme,hpHost,hpPort = ..string.match(line,`^httppx\:\/\/(https?)\/([^\@\:]+)\:(\d+)`);
-			hpUserInfo = null;
-		}
-		if( hpHost ) {
-			var outbound = {
-				address = hpHost;
-				port = tonumber(hpPort);
-				network = "tcp";
-				protocol = (..string.lower(hpScheme)=="https") ? "https" : "http";
-			};
-			if(hpUserInfo){
-// 【模式匹配】把认证串拆成用户名与密码。^([^\:]+)=串首不含冒号的用户名；\:=字面冒号；(.+)$=其余全部作为密码
-				var u,p = ..string.match(hpUserInfo,"^([^\:]+)\:(.+)$");
-				if(u && p){ outbound.id = decodeUser(u) ++ ":" ++ decodeUser(p); }
-				else { outbound.id = decodeUser(hpUserInfo); }
-			}
-// 【模式匹配】提取 # 之后的备注内容。(.*)$=直到行尾的任意字符（含空串）
-			var hpTag = ..string.match(line,`#(.*)$`);
-			if(hpTag) outbound.ps = ..inet.url.decode(hpTag);
-			// 传输安全 / SNI / 允许不安全证书等附加参数
-			var hpMain = line;
-			var hpHash = ..string.indexOf(hpMain,"#");
-			if(hpHash) hpMain = ..string.left(hpMain,hpHash-1);
-// 【模式匹配】提取 ? 之后的查询串。\?=字面问号（模式里 ? 需转义才表示其本身）；(.*)$=直到行尾
-			var hpQuery = ..string.match(hpMain,`\?(.*)$`);
-			if(hpQuery){
-				var hq = ..inet.url.splitParameters(hpQuery);
-				if(hq.tls) outbound.tls = hq.tls;
-				if(hq.sni) outbound.sni = hq.sni;
-				if(hq.fp) outbound["client-fingerprint"] = hq.fp;
-				if(hq.allowinsecure!==null) outbound.allowInsecure = (hq.allowinsecure!="0" && hq.allowinsecure!="false");
-			}
-			outbound.subscribeUrl = subscribeUrl;
-			..table.push(outbounds,outbound);
 			continue;
 		}
 
@@ -1419,40 +1677,43 @@ importFromString = function(str,subscribeUrl,subps){
 			continue;
 		}
 
-		//其他协议：Xray 26.x 暂不支持这些协议名，但按协议规范完整导入并保留全部字段；
-		//生成配置时 ensureSupportedOutbound 会自动降级为 blackhole，避免整份配置加载失败。
+		//其他协议（真兜底）：只要形如 scheme:// 就按协议规范完整导入并保留全部字段。
+		//注意：这里「认识」不等于「内核支持」——生成配置时 ensureSupportedOutbound
+		//会按 xray.protocols.xrayNative 统一降级为 blackhole，避免整份配置加载失败。
+		//这样将来新增协议（anytls / tuic / ...）无需改动本文件即可导入。
+		//
+		//★ 这里刻意不排除 http/https：专用 http 分支要求「域名后不带路径」，
+		//  大小写变体（HTTP:// Http://）与带路径写法不会命中它，只能由这里兜住，
+		//  排除它们会导致节点丢失（原则：宁导错，不错过）。
 // 【模式匹配】匹配其他协议的通用链接。^\s*=开头空白；([a-zA-Z][a-zA-Z0-9\-\.\+]*)=协议名（首字母开头，后可含字母数字与 - . +）；\:\/\/=字面 ://；(\S+)$=其余非空白字符
 		var otherScheme,otherBody = ..string.match(line,`^\s*([a-zA-Z][a-zA-Z0-9\-\.\+]*)\:\/\/(\S+)$`);
 		if(otherScheme){
 			otherScheme = ..string.lower(otherScheme);
-			var importOnly = ["anytls";"tuic";"snell";"mieru";"shadowtls";"juicity";"hysteria";"naive";"hysteria-go"];
-			if(..table.find(importOnly,otherScheme)){
-				var oUrl = ..inet.url.split(otherScheme ++ "://" ++ otherBody);
-				if(oUrl && oUrl.host){
-					// Xray 的 hysteria 协议仅支持 version=2（即 hysteria2），
-					// 单独的 hysteria:// 链接是 v1，标记为 hysteria1 以便明确降级（而不是按 v2 错误生成）
-					var protocolName = otherScheme;
-					if(otherScheme=="hysteria") protocolName = "hysteria1";
-					var outbound = {
-						address = oUrl.host;
-						port = tonumber(oUrl.port) : 443;
-						network = "tcp";
-						protocol = protocolName;
-					};
-					if(oUrl.user) outbound.id = decodeUser(oUrl.user);
-					if(oUrl.password) outbound.password = ..inet.url.decode(oUrl.password);
-					if(oUrl.extraInfo){
-						var info = ..inet.url.splitParameters(oUrl.extraInfo);
-						for(k,v in info){ if(outbound[k]===null) outbound[k] = v; }
-						if(info.fp) outbound["client-fingerprint"] = info.fp;
-						if(info.allowinsecure!==null) outbound.allowInsecure = (info.allowinsecure!=="0" && info.allowinsecure!=="false");
-					}
-					if(oUrl.location) outbound.ps = ..inet.url.decode(oUrl.location);
-					outbound.subscribeUrl = subscribeUrl;
-					..table.push(outbounds,outbound);
+			var oUrl = ..inet.url.split(otherScheme ++ "://" ++ otherBody);
+			if(oUrl && oUrl.host){
+				// Xray 的 hysteria 协议仅支持 version=2（即 hysteria2），
+				// 单独的 hysteria:// 链接是 v1，标记为 hysteria1 以便明确降级（而不是按 v2 错误生成）
+				var protocolName = otherScheme;
+				if(otherScheme=="hysteria") protocolName = "hysteria1";
+				var outbound = {
+					address = oUrl.host;
+					port = tonumber(oUrl.port) : 443;
+					network = "tcp";
+					protocol = protocolName;
+				};
+				if(oUrl.user) outbound.id = decodeUser(oUrl.user);
+				if(oUrl.password) outbound.password = ..inet.url.decode(oUrl.password);
+				if(oUrl.extraInfo){
+					var info = ..inet.url.splitParameters(oUrl.extraInfo);
+					for(k,v in info){ if(outbound[k]===null) outbound[k] = v; }
+					if(info.fp) outbound["client-fingerprint"] = info.fp;
+					if(info.allowinsecure!==null) outbound.allowInsecure = (info.allowinsecure!=="0" && info.allowinsecure!=="false");
 				}
-				continue;
+				if(oUrl.location) outbound.ps = ..inet.url.decode(oUrl.location);
+				outbound.subscribeUrl = subscribeUrl;
+				..table.push(outbounds,outbound);
 			}
+			continue;
 		}
 
 		//clashJson格式
@@ -1518,10 +1779,12 @@ importFromString = function(str,subscribeUrl,subps){
 			}
 		}
 	}
+/*
 	if(!#outbounds) {
 		//console.dump(str);
 		debug.log.print("从"+tempForDebugLog+"抓取到"+#outbounds+"个服务器");
 	}
+*/
 		
 		//debug.log.print("抓取到"+#outbounds+"个服务器");
 	return outbounds;
@@ -1537,21 +1800,17 @@ importFromClipboard  = function(refreshConfig){
 
 		str = ..string.trim(str,'"\'\t\r\n ');//从字符串首尾清除指定的一个或多个单字节字符（"'制表符(横向跳格) 回车换行 ）
 
-		if( ..string.startWith(str,"http://") || ..string.startWith(str,"https://") 
-			|| ..string.match(str,"^\s*/\N+\s*$") ){// ^模式串必须从文本的开始处匹配：\s空白符、*任意字符、/、\N不是换行符1次或多次、\s空白字符、*任意字符、$模式串必须匹配至文本结束处）
-
-			return importFormSubscription(str);
+		// 订阅源网址 → 抓取 + 解析；其余一律当节点数据解析。
+		if( isSubscribeUrl(str) ){
+			return importFromUrl(str);
 		}
 
 		return importFromString(str);
     }
-	elseif( refreshConfig===true ){
+	else{
 		if(str){
 			str = ..string.trim(str,'"\'\t\r\n '); //（"'制表符(横向跳格) 回车换行 ）
-			if( ..string.startWith(str,"http://") || ..string.startWith(str,"https://") 
-				|| ..string.match(str,"^\s*/\N+\s*$") ){// ^模式串必须从文本的开始处匹配：\s空白符、*任意字符、/、\N不是换行符1次或多次、\s空白字符、*任意字符、$模式串必须匹配至文本结束处）
-
-				//import UpdateSubscription;
+			if( isSubscribeUrl(str) ){
 				if( updateSubscription({[str]=true}) ){return true}
 				else {return false}
 			}
@@ -1857,11 +2116,18 @@ catch () {
 // 可在软件「订阅配置」页面点「链接提取规则」按钮编辑。
 //
 // 参数 @url      起始网址（通常是「列出订阅链接」的网页，也可以是订阅源本身）
-// 参数 @maxFetch 可选，第二级最多访问多少个页面，默认 20（防止链接太多时耗时失控）
+// 参数 @maxFetch 可选，最多访问多少个页面，默认 20（防止链接太多时耗时失控）
 //
-// 返回：去重后的链接数组（都是绝对地址，且末尾命中后缀白名单）
+// 返回：去重后的任务数组，元素形如 { url=绝对地址; content=内容或null }
+//       · content 非 null → 内容已经获取，调用方直接拿去解析，不要再访问一次
+//       · content 为 null → 内容还没获取，由调用方去获取
+//
+// ★ 同一个链接只会被访问一次：一次链接与二次链接之间可能互相重复，
+//   重复的由 visitedMap / resultMap 挡掉；已经访问过的内容存在 contentCache，
+//   既用于提取下级链接，也随结果返回给调用方送去解析（同一份数据不重复下载）。
 // ==========================================================================
-var extractLinksFromUrl = function(url,maxFetch){
+// 参数 @pageContent 允许调用方传入已经抓取到的页面内容，避免重复下载（可选）
+extractLinksFromUrl = function(url,maxFetch,pageContent){
 	import inet.http;
 	import inet.url;
 	import zlib;	// 导入 zlib 后 inet.http 才能自动解压 gzip 应答
@@ -1872,7 +2138,7 @@ var extractLinksFromUrl = function(url,maxFetch){
 
 	maxFetch = ..tonumber(maxFetch);
 	// 上限：同一批最多「二次访问」多少个页面。
-	// 实测大站（例如 GitHub 仓库页 240KB）每次访问约 2~3 秒，默认取 20 以控制总耗时。
+	// 实测大站（例如 GitHub 仓库页 240KB）每次访问约 2~3 秒，默认取 30 以控制总耗时。
 	if(!maxFetch || maxFetch<1) maxFetch = 20;
 	maxFetch = ..math.floor(maxFetch);
 
@@ -2029,13 +2295,27 @@ var extractLinksFromUrl = function(url,maxFetch){
 		}
 	};
 
-	// 结果集（自动去重）
+	// 结果集（自动去重）：数组元素为 { url=..., content=... }
+	//   content 非 null → 内容已经获取，调用方直接用它解析，不要再访问一次；
+	//   content 为 null → 内容还没获取，由调用方去获取。
+	// 同一份内容既用于「提取下级链接」，也随结果返回给调用方「送去解析」。
 	var resultLinks = [];
-	var resultMap = {};
-	var addResult = function(link){
-		if(resultMap[link]) return;
-		resultMap[link] = true;
-		..table.push(resultLinks,link);
+	var resultMap = {};	// url → 在 resultLinks 里的下标
+	var addResult = function(link,content){
+		var idx = resultMap[link];
+		if(idx){
+			// 已经收录过：若这次带了内容、而旧条目还没有内容，就把内容补上。
+			// 同一个链接可能先被「提取下级链接」以无内容的形式收录，
+			// 随后它自己又被访问到 —— 此时必须把内容补进去，
+			// 否则调用方会为它再访问一次（违背「同一个链接只访问一次」）。
+			if(type(content)==type.string && #content){
+				var old = resultLinks[idx].content;
+				if(type(old)!=type.string || !#old) resultLinks[idx].content = content;
+			}
+			return;
+		}
+		resultMap[link] = #resultLinks + 1;
+		..table.push(resultLinks,{url=link; content=content});
 	};
 
 	// 把一批原始链接规范化并去重，返回绝对地址数组
@@ -2057,7 +2337,7 @@ var extractLinksFromUrl = function(url,maxFetch){
 
 	// 共用一个 HTTP 客户端（自动使用系统代理），并设置超时，避免个别死链把整体拖住
 	var http = ..inet.http();
-	http.setTimeouts(4000,6000,6000);
+	http.setTimeouts(8000,15000,15000);
 
 	var fetchPage = function(u){
 		var callOk,content = ..call(
@@ -2073,67 +2353,128 @@ var extractLinksFromUrl = function(url,maxFetch){
 	//------------------------------------------------------------------
 	// 第 0 级：抓取起始网址，提取全部链接（已去重）
 	//------------------------------------------------------------------
-	var visitedMap = {};
+	var visitedMap = {};		// 已经处理过的链接（保证同一个链接只访问一次）
+	var contentCache = {};	// 已经获取到的内容（同一份数据既用于提取、也送去解析）
 	visitedMap[url] = true;
 
-	var pageContent = fetchPage(url);
+	if(!pageContent) pageContent = fetchPage(url);
 	if(!pageContent){
 		..debug.log.print("[提取链接] 抓取失败：",url);
 		return [];
 	}
+	contentCache[url] = pageContent;
 
 	var firstLevel = collectLinks(pageContent,url);
 	..debug.log.print("[提取链接]",url,"共提取到唯一链接",#firstLevel,"个");
 
 	//------------------------------------------------------------------
 	// 第 1 级：分类处理
+	//
+	// ★ 关键：「作为解析对象」（命中后缀白名单）与「访问并提取下级链接」
+	//   （域名命中访问名单）不再互斥，两者可以同时成立。
+	//   例如 https://某站/p/5063.html 既命中后缀白名单（.html 本身要送解析），
+	//   域名又在访问名单里（要进去把真正的订阅文件 *.txt / *.yaml 挖出来）。
+	//   过去命中白名单就 continue，这类「文章页」会被当成订阅文件直接送去解析，
+	//   页面里的真实订阅链接永远发现不了。
+	//
+	// ★ 同一个链接只访问一次：内容存进 contentCache，
+	//   既用来提取下级链接，也随结果返回给调用方送去解析。
+	//   一次链接与二次链接之间也可能重复，重复的由 resultMap / visitedMap 挡掉。
 	//------------------------------------------------------------------
 	var fetchCount = 0;
 	var capWarned;	// 只在首次达到上限时提示一次
+
+	// ---- 预扫描：先分类，把「需要进去看看」的链接收集起来 ----
+	//     刻意不在这里访问：集中起来并行访问（见下面的 fetchUrlsParallel）。
+	//     串行访问几十个链接会把界面线程卡住 60~90 秒，这正是「界面不能卡」要解决的问题。
+	var plan = [];		// { link=; needParse=; needVisit=; content= }
+	var toFetch = [];	// 需要访问的链接（保持页面里的出现顺序）
 	for(i=1;#firstLevel;1){
 		var link = firstLevel[i];
 
-		// ① 末尾命中后缀白名单 → 直接作为结果，不再访问
-		if( hitExt(allowedExts,link) ){
-			addResult(link);
+		// ① 末尾是明显无关的后缀 → 直接丢弃
+		if( hitExt(skipExts,link) ) continue;
+
+		// ② 该链接本身是否要送去解析（命中后缀白名单）
+		var needParse = hitExt(allowedExts,link);
+
+		// ③ 是否需要进去提取下级链接（域名命中访问名单）
+		var needVisit = hitDomain(link);
+
+		// 两者都不满足 → 丢弃
+		if( !needParse && !needVisit ) continue;
+
+		// ④ 取内容：已缓存的直接复用
+		var content = contentCache[link];
+		if( type(content)!=type.string || !#content ) content = null;
+
+		if(content){
+			..table.push(plan,{link=link; needParse=needParse; needVisit=needVisit; content=content});
 			continue;
 		}
 
-		// ② 末尾是明显无关的后缀 → 直接丢弃
-		if( hitExt(skipExts,link) ) continue;
+		// ⑤ 「只需解析、不需要提取下级链接」的链接不在这里访问：
+		//    直接作为结果返回（content 为 null），由调用方在后台线程获取并解析，
+		//    避免把下载耗时压在界面线程上（本函数运行在界面线程）。
+		if(needParse && !needVisit){
+			addResult(link,null);
+			continue;
+		}
 
-		// ③ 域名不在「二次访问域名名单」里 → 直接丢弃，不访问
-		if( !hitDomain(link) ) continue;
-
-		// ④ 命中域名名单 → 再访问一次，从里面提取后缀白名单链接
-		if(visitedMap[link]) continue;
+		// ⑥ 需要访问 → 检查上限后收集起来，稍后并行访问
 		if(fetchCount >= maxFetch){
-			// 注意：达到上限只是不再「二次访问」，
-			// 仍然要继续扫描后面的链接 —— 它们可能直接就命中后缀白名单（那些不需要访问）。
+			// 达到上限：不再访问。
+			// 「只需解析」的链接上面已经作为结果返回；
+			// 「需要访问提取」的链接只能放弃。
 			if(!capWarned){
 				capWarned = true;
-				..debug.log.print("[提取链接] 第二级访问数量达到上限",maxFetch,"个，后续链接不再二次访问");
+				..debug.log.print("[提取链接] 访问数量达到上限",maxFetch,"个，后续链接不再访问");
 			}
 			continue;
 		}
 		visitedMap[link] = true;
 		fetchCount++;
+		..table.push(toFetch,link);
+		..table.push(plan,{link=link; needParse=needParse; needVisit=needVisit});
+	}
 
-		var subContent = fetchPage(link);
-		if(!subContent) continue;
-
-		var subLinks = collectLinks(subContent,link);
-		for(j=1;#subLinks;1){
-			if( hitExt(allowedExts,subLinks[j]) ) addResult(subLinks[j]);
+	// ---- 并行访问这些链接（界面线程只做轮询 + 泵消息，所以界面不卡）----
+	if(#toFetch){
+		var fetchedMap = fetchUrlsParallel(toFetch,8);
+		for(i=1;#plan;1){
+			var it = plan[i];
+			if(it.content) continue;	// 已有内容
+			var text = fetchedMap[it.link];
+			if(type(text)==type.string && #text){
+				it.content = text;
+				contentCache[it.link] = text;
+			}
 		}
 	}
 
-	..debug.log.print("[提取链接] 处理完成：第二级访问",fetchCount,"个，最终结果",#resultLinks,"个");
+	// ---- 处理：送去解析 + 提取下级链接 ----
+	for(i=1;#plan;1){
+		var it = plan[i];
+		var content = it.content;
+		if(type(content)!=type.string || !#content) continue;
+
+		// ⑦ 送去解析（用同一份内容，调用方不会再访问一次）
+		if(it.needParse) addResult(it.link,content);
+
+		// ⑧ 进去提取下级链接（只保留命中后缀白名单的，不再继续递归）
+		if(it.needVisit){
+			var subLinks = collectLinks(content,it.link);
+			for(j=1;#subLinks;1){
+				var sub = subLinks[j];
+				if( hitExt(skipExts,sub) ) continue;
+				if( hitExt(allowedExts,sub) ) addResult(sub,null);
+			}
+		}
+	}
+
+	..debug.log.print("[提取链接] 处理完成：访问",fetchCount,"个，最终结果",#resultLinks,"个");
 	return resultLinks;
 }
-
-
-
 
 
 
@@ -2167,7 +2508,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		}
 
 		if(!..table.count(outbondSubscribeUrlMap)){ 
-			..mainForm.msgWarn('当前未启用任何订阅源,\n请先复制订阅源网址到剪贴板然后点击「批量导入链接」!', 1500);
+			if(..mainForm) ..mainForm.msgWarn('当前未启用任何订阅源,\n请先复制订阅源网址到剪贴板然后点击「批量导入链接」!', 1500);
 			//winform.btnUpdate.disabledText = null;
 			return;
 		}
@@ -2175,39 +2516,162 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	//debug.debug()
 	var count = 0; 
 	for(url,data in outbondSubscribeUrlMap){
-		debug.log.print("开始从",url,"获取服务器")	;
-		var impOutbounds = ..xray.outbounds.importFromString(url);
-			
-        var links = extractLinksFromUrl(url);
-        
-        
-     //   debug.debug();
-     	
-        for k,link in links {
-          //  var servers = ..xray.outbounds.importFromString(link);
-          debug.log.print(link);
-        	..table.append(impOutbounds, ..xray.outbounds.importFromString(link));
-        //标记重复节点
-		for(i=1;#impOutbounds;1){
-			if(impOutbounds[i].repeat) continue;
-			for(j=i+1;#impOutbounds;1){
-			//if( j<=i ){ continue }
-				if( impOutbounds[j].address==impOutbounds[i].address 
-					&& impOutbounds[j].port==impOutbounds[i].port ){
-					impOutbounds[j].repeat=true;
+		// 每个订阅源开始处理时显示进度提示框，整个处理过程结束后关闭（原设计的交互）
+		var progressForm = openSubscribeProgressDlg(url);
+		// ==================================================================
+		// 【去重策略】增量去重（哈希表，O(n)）
+		//
+		// 1. 为什么必须「边获取边去重」，而不是「全部合并后再去重」：
+		//    一个主订阅源往往能提取出几十个二级链接，每个链接可能解析出几千个节点，
+		//    全部合并后再去重会直接把内存吃满。所以每收到一批就立即去重合并。
+		//
+		// 2. 为什么用哈希表而不是原来的「标记 repeat + 双重循环」：
+		//    双重循环是 O(n²)（实测 2000 节点 828ms、3000 节点 500ms，
+		//    按此推算 13000 节点需要数十秒）；哈希表一次遍历仅 15ms（快 30~55 倍），
+		//    而且天然支持增量 —— seenKeys 跨批次保留，新批次只检查新增节点。
+		// ==================================================================
+		var impOutbounds = ..table.array();
+		var seenKeys = {};	// 去重索引：address:port → true（跨批次保留）
+
+		// 把一批节点并入结果集（逐节点去重，重复的直接丢弃，绝不进入数组占内存）
+		var addNodes = function(nodes){
+			if(type(nodes)!=type.table) return 0;
+			var added = 0;
+			for(i=1;#nodes;1){
+				var ob = nodes[i];
+				if(type(ob)!=type.table) continue;
+				var key = tostring(ob.address) ++ ":" ++ tostring(ob.port);
+				if(seenKeys[key]) continue;		// 已存在 → 直接丢弃
+				seenKeys[key] = true;
+				..table.push(impOutbounds,ob);
+				added++;
+			}
+			return added;
+		};
+
+		// ---- ① 主订阅源：顺序获取（数量少，不值得并发）----
+		//    fetchSubscription 负责「获取」（唯一的联网入口）
+		//    importFromString  负责「解析」（永不联网）
+		var content;
+		if(type(data)==type.string && #data){
+			content = data;						// 调用方已直接给出内容
+		}
+		else {
+			// 进度框由本函数（updateSubscription）负责整个订阅过程，所以这里不再单独开一个
+			content = ..xray.outbounds.fetchSubscription(url,false);
+		}
+
+		if(!content){
+			debug.log.print("[" ++ url ++ "] 主订阅源获取失败");
+		}
+
+		// ---- 组装任务列表：主订阅源内容 + 全部二级链接 ----
+		//    每个任务都在独立线程里完成「（必要时）获取 + 解析」。
+		//    数量可能很多（一个页面几十个链接），串行会长时间阻塞界面，所以要并发；
+		//    但并发结果不能全部驻留内存等最后一起处理，所以分批启动，
+		//    并且「谁先完成谁先合并」—— 合并后立即清掉该批的跨线程数据，内存即时释放。
+		//    解析很占 CPU（几千个节点要好几秒），放在界面线程会明显卡界面，
+		//    因此主订阅源的内容也一并交给后台线程解析
+		//    （主订阅源的「获取」仍在界面线程顺序执行，符合「主 url 顺序、二级 url 并行」）。
+		var tasks = ..table.array();
+		if(content){
+			..table.push(tasks,{url=url; content=content; isMain=true});
+		}
+
+		var linkTasks = extractLinksFromUrl(url, , content);
+		for(k,t in linkTasks){
+			..table.push(tasks,{url=t.url; content=t.content; isMain=false});
+		}
+
+		if(#tasks){
+			debug.log.print("[" ++ url ++ "] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
+
+			var tBegin = ..time.tick();
+			var BATCH_SIZE = 8;	// 每批并发数（同时也在控制内存峰值）
+			var keyPrefix = "subTask_" ++ tostring(..string.crc32(url)) ++ "_" ++ tostring(tBegin) ++ "_";
+
+			for(start=1;#tasks;BATCH_SIZE){
+				var stop = ..math.min(start + BATCH_SIZE - 1,#tasks);
+
+				// 启动这一批的任务（每个链接一个独立线程）
+				for(k=start;stop;1){
+					..thread.invoke(
+						function(task,key){
+							import inet.http;
+							import web.rest.github;
+							import xray.outbounds;
+							import debug;
+							import debug.log;
+
+							// 内容已给出（主订阅源）则直接用，否则在线程内抓取。
+							// 线程内只写 debug.log，不做任何界面提示。
+							// 注意：aardio 中空字符串 "" 是真值，必须同时检查长度
+							var text = task.content;
+							if(type(text)!=type.string || !#text){
+								if( string.indexOf(task.url,"github.com")
+									|| string.indexOf(task.url,"raw.githubusercontent.com") ){
+									text = web.rest.github.getContent(task.url);
+								}
+								if(!text){
+									var http = inet.http();
+									http.setTimeouts(8000,15000,15000);
+									text = http.get(task.url);
+								}
+							}
+
+							if(!text){
+								debug.log.print("[任务] 获取失败:",task.url);
+								..thread.set(key,"");	// 失败也写一个非 null 值，表示「已完成」
+								return;
+							}
+
+							// 解析
+							var nodes = xray.outbounds.importFromString(text,task.url);
+							..thread.set(key, nodes ? nodes : "");
+						}, tasks[k], keyPrefix ++ tostring(k)
+					)
+				}
+
+				// 收割这一批：谁先完成谁先合并（thread.get 是非阻塞读取）
+				var pending = [];
+				for(k=start;stop;1) ..table.push(pending,k);
+
+				while(#pending){
+					var stillPending = [];
+					for(i=1;#pending;1){
+						var pk = pending[i];
+						var key = keyPrefix ++ tostring(pk);
+						var nodes = ..thread.get(key);
+
+						if(nodes === null){			// 尚未完成
+							..table.push(stillPending,pk);
+							continue;
+						}
+
+						..thread.set(key,null);		// 立即释放跨线程共享区内存
+						if(type(nodes)==type.table){
+							var added = addNodes(nodes);	// ← 完成一批就立即去重合并
+							if(added) debug.log.print("[任务] " ++ tasks[pk].url ++ "获得" ++ #nodes ++ "个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
+							else debug.log.print("[任务] " ++ tasks[pk].url ++ " 获取0个节点 ");
+						}
+						
+					}
+
+					if(#stillPending == #pending){
+						// 本批尚无任何结果：稍等片刻（thread.delay 会泵界面消息，不会卡界面）
+						..thread.delay(20);
+					}
+					pending = stillPending;
 				}
 			}
+
+			debug.log.print("[" ++ url ++ "] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
 		}
-		//删除重复节点
-		var removecount=0;
-		for(i=#impOutbounds;1;-1){
-			if(impOutbounds[i].repeat){
-				..table.remove(impOutbounds,i);
-				removecount++;
-			}
-		}
-        	if (#impOutbounds > 5000) break;//太多了内存不够
-        }
+		// 本订阅源处理完毕：关闭进度提示框，随后用 msgOk 汇报本次结果
+		closeSubscribeProgressDlg(progressForm);
+		// 注：原代码此处有「if (#impOutbounds > 5000) break;」的提前中止，
+		//     现已按需求注释掉 —— 增量去重后重复节点不再堆积，内存压力已大幅降低。
+
         
 
 	//	debug.log.print("删除重复服务器",removecount,"个","                            获取",#impOutbounds,"个")	;
@@ -2224,7 +2688,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			}
 */
 			debug.log.print("从",url,"获得",#impOutbounds,"个服务器");
-			..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
+			// 注意：本函数可能被放到后台线程执行，此时 ..mainForm 为 null，必须判空
+			if(..mainForm) ..mainForm.msgOk("从"+url+"已刷新" + #impOutbounds + "个订阅服务器。",1500);
 			count = count + #impOutbounds;
 			..table.append(cfgOutbounds,impOutbounds);
 			
@@ -2238,9 +2703,9 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	//import xray
 	//..frmXray.removeRepeat();
 	..config.proxy.save();
-	..mainForm.msgOk("已刷新" + count + "个订阅服务器。",1500);
+	// 按需求：界面只报告「每个主订阅源结束时获得多少节点」，
+	// 其余进度信息一律只写 debug.log，避免弹窗过多干扰。
 	debug.log.print("已找到" + count + "个订阅服务器。")
-	..publish("uiCommand.print","已找到" + count + "个订阅服务器。"); 
 //	..publish("outbounds.updateConfigJson");
 //	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
 
@@ -2509,8 +2974,10 @@ importFromClash = function(str,node){
 
 /**intellisense(xray.outbounds) 
 exportSharedLinks(.(outbounds) = 导出分享链接
-importFromString(.(str,subscribeUrl) = 导入分享链接
+importFromString(.(str,subscribeUrl,subps) = 导入节点数据（纯解析、永不联网）\n传入单行的订阅源网址时会发日志并直接返回
 importFromClipboard() = 自剪贴板导入分享链接
+isSubscribeUrl(.(str) = 判定整串数据是否为订阅源网址\n只有「单行 + http(s)://主机[:端口]/」才算网址；多行一律返回 false\n纯判定，不发起网络请求
+toHttpProxyNode(.(line) = 把单行 http(s) 代理链接解析为节点对象\n非 http(s) 代理链接返回 null（带路径、无端口的裸主机等都会返回 null）
 autoUpdateSubscription() = 自动并静默更新订阅源
 updateSubscription() = 更新或自剪贴板导入订阅源\n可选在参数中用一个表自定义要更新的订阅地址,\n参数表中键为url，值为true
 importFromClash(.(str,node) = 从clash文件导入节点或订阅

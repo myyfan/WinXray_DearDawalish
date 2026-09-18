@@ -193,7 +193,7 @@ winform.editOutbounds.enablePopMenu(function(){
 						
 					var count = 0;
 					for(url,v in subscribeUrls){ 
-						var outbounds = xray.outbounds.importFromString(url);
+						var outbounds = xray.outbounds.importFromUrl(url);
 						if(#outbounds){
 							for(i=#cfg;1;-1){
 								var outbound = cfg[i] 

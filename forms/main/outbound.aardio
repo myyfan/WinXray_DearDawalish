@@ -794,7 +794,7 @@ winform.btnImportSharedLink.skin(style.link);
 winform.btnImportSharedLink.oncommand = function(id,event){
 	var str = ..win.clip.read();
 	if(str){   
-		var outbounds = xray.outbounds.importFromString(str);
+		var outbounds = xray.outbounds.isSubscribeUrl(str) ? xray.outbounds.importFromUrl(str) : xray.outbounds.importFromString(str);
 		if(#outbounds){
 			var cfg = winform.outboundConfig;
 			table.clear(cfg);

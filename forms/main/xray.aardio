@@ -17,8 +17,8 @@ btnTcping={cls="plus";text="检测并连接最快服务器";left=674;top=366;rig
 chkAutoTest={cls="plus";text="异常自动重连 ";left=432;top=387;right=557;bottom=401;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF0C8';notify=1;textPadding={left=30};z=9};
 chkJustValid={cls="checkbox";text="仅连接已测通";left=434;top=381;right=527;bottom=395;z=13};
 chkSearchMode={cls="checkbox";text="开启后台搜索";left=548;top=380;right=643;bottom=394;z=11};
-chkValidNoSearch={cls="checkbox";text="已测通不搜索";left=547;top=402;right=644;bottom=416;z=12};
-edit={cls="edit";left=7;top=404;right=954;bottom=584;autohscroll=false;bgcolor=0x000000;color=0xFFFFFF;db=1;dl=1;dr=1;edge=1;multiline=1;vscroll=1;z=2};
+chkFollowSearch={cls="checkbox";text="跟踪搜索进度";left=547;top=402;right=644;bottom=416;z=12};
+edit={cls="richedit";left=7;top=404;right=954;bottom=584;autohscroll=false;bgcolor=0x000000;color=0xFFFFFF;db=1;dl=1;dr=1;edge=1;multiline=1;readonly=1;vscroll=1;z=2};
 listview={cls="vlistview";left=4;top=5;right=954;bottom=358;db=1;dl=1;dr=1;dt=1;edge=1;fullRow=1;gridLines=1;z=1};
 radioProxy={cls="radiobutton";text="全局代理";left=115;top=367;right=194;bottom=397;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);z=4};
 radioProxyDirect={cls="radiobutton";text="不使用代理";left=8;top=367;right=108;bottom=397;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);z=6};
@@ -42,6 +42,10 @@ frmXray.listview.insertColumn("下载速度（最高）",-1)
 
 // 减少闪烁，详见：https://learn.microsoft.com/zh-cn/windows/win32/controls/extended-list-view-styles
 frmXray.listview.setExtended(0x10000/*_LVS_EX_DOUBLEBUFFER*/);
+
+//接管日志控件（批量刷新 + 智能滚动 + 容量管理），必须在任何日志输出之前调用
+import xray.logPanel;
+xray.logPanel.attach(frmXray.edit);
 
 /*
 虚表（vlistview）兼容层
@@ -1675,12 +1679,6 @@ frmXray.btnTcping.oncommand = function(id,event){
 						continue;
 					}
 				}
-				elseif(frmXray.chkValidNoSearch.checked){
-					if(outbounds[i].autoConnect === false || outbounds[i].ps == "已测通"){
-						listview.setItemText("禁止测速",i,7);
-						continue;
-					}
-				}
 				else{
 					if(outbounds[i].autoConnect === false){
 						listview.setItemText("禁止测速",i,7);
@@ -1832,12 +1830,6 @@ frmXray.btnTcping.oncommand = function(id,event){
 				if(frmXray.chkJustValid.checked){
 					if(outbounds[i].ps != "已测通"){
 						listview.setItemText("禁止测速",i,7);					
-						continue;
-					}
-				}
-				elseif(frmXray.chkValidNoSearch.checked){
-					if(outbounds[i].autoConnect === false || outbounds[i].ps == "已测通"){
-						listview.setItemText("禁止测速",i,7);
 						continue;
 					}
 				}
@@ -3078,7 +3070,8 @@ if(true  ){//开始必须为真，要不然第一个测速不通是可能会导�
 	frmXray.chkAutoTest.checked = true;
 	//frmXray.chkAutoTest.oncommand();//调用设置异常检测计时器
 }
-frmXray.chkValidNoSearch.checked = config.proxy.chkValidNoSearch;
+// 跟踪搜索进度：配置缺失时默认开启（保持改造前「跟随槽位」的行为）
+frmXray.chkFollowSearch.checked = (config.proxy.chkFollowSearch === null) ? true : config.proxy.chkFollowSearch;
 
 ..searcherTimerID = null; 
 setSearcherTimer = function(){
@@ -3126,66 +3119,81 @@ if(#config.proxy.outbounds){
 frmXray.startCertPinFetch = function(){
 	if(frmXray.certPinRunning) return;
 
+	// 筛选本次要抓的节点：所有「需要指纹但还没有指纹」的
+	// （抓成功的节点下次不会再进来，所以不会重抓）
 	var jobs = ..table.array();
 	for(k,v in ..config.proxy.outbounds){
 		if( v.allowInsecure && !v.pinnedPeerCertSha256 && v.address ){
-			// 不记录抓取失败信息（不写 certPinFailCount），保证每次启动都重试
 			..table.push(jobs,{index=k;address=v.address;port=v.port : 443;sni=v.sni});
 		}
 	}
 	if(!#jobs) return;
 
-	frmXray.certPinRunning = true;
-	frmXray.certPinTotal = #jobs;
-	frmXray.certPinDoneCount = 0;
-	frmXray.edit.print("开始后台获取服务器证书指纹，共 " + #jobs + " 个节点 ...");
+	// ★ 进度点：本次「待抓列表」中的位置号（不是 outbounds 下标），
+	// 与 searcherIndex 一样存在 config.proxy 里、按顺序推进，靠 5 分钟定时器落盘（丢失就丢失）。
+	// 每轮都处理全部待抓节点（环形），只是起点从上次进度号开始 ——
+	// 避免每次都从列表第一个开始（能长期留在列表前面的，基本都是反复失败的节点）。
+	var totalJobs = #jobs;
+	var startPos = (tonumber(..config.proxy.certPinProgress) : 0) + 1;
+	if(startPos > totalJobs) startPos = 1;//绕回：新一轮从头开始
 
-	var THREADS = 12;
-	var chunkSize = ..math.ceil(#jobs / THREADS);
-	var taskCount = 0;
-	for(t=1;THREADS;1){
-		var startPos = (t-1)*chunkSize + 1;
-		if(startPos > #jobs) break;
-		var stopPos = ..math.min(t*chunkSize,#jobs);
-		taskCount++;
-		..thread.set("certPinDone_" + t,false);
-		..thread.invoke(
-			function(chunk,tid){
-				import xray.certPin;
-				var results = {};
-				for(i=1;#chunk;1){
-					var j = chunk[i];
+	frmXray.certPinRunning = true;
+	frmXray.certPinTotal = totalJobs;
+	frmXray.certPinDoneCount = 0;
+	frmXray.edit.print("开始后台获取服务器证书指纹，共 " + totalJobs + " 个节点（本次从列表第 " + startPos + " 个开始）...");
+
+	// ★ 分批抓取：每批 BATCH 个节点并行处理，每批完成即推进进度点。
+	// （不能只在启动时写一次进度点：一批要跑几分钟，中途关闭会导致整批重复抓）
+	var BATCH = 12;
+	var batchPos = 1;                    // 本次处理序号（1-based）
+	var successCount = 0;                // 本次累计成功数
+	var successBase = 0;                 // 绕回时的成功数基数（避免「位置 − 成功数」为负）
+	var lastPos = startPos;
+
+	// 环形取节点：本次第 k 个节点 = jobs[startPos + k - 1]（越过末尾则绕回开头）
+	frmXray.certPinNodeAt = function(k){
+		var p = startPos + k - 1;
+		if(p > totalJobs) p -= totalJobs;
+		return p;
+	};
+
+	frmXray.runCertPinBatch = function(){
+		var stopPos = ..math.min(batchPos + BATCH - 1,totalJobs);
+		var batch = ..table.array();
+		for(k=batchPos,stopPos,1){
+			..table.push(batch,jobs[frmXray.certPinNodeAt(k)]);
+		}
+		frmXray.certPinBatchEnd = stopPos;
+		var n = #batch;
+		for(t=1,n,1){
+			..thread.set("certPinDone_" + t,false);
+			..thread.invoke(
+				function(j,tid){
+					import xray.certPin;
 					var sha = xray.certPin.getSha256(j.address,j.port,j.sni,4000);
-					results[i] = {index=j.index;sha=sha};
-				}
-				thread.set("certPinResult_" + tid,results);
-				thread.set("certPinDone_" + tid,true);
-			},..table.slice(jobs,startPos,stopPos),t
-		);
-	}
-	frmXray.certPinTaskCount = taskCount;
+					thread.set("certPinResult_" + tid,{index=j.index;sha=sha});
+					thread.set("certPinDone_" + tid,true);
+				},batch[t],t
+			);
+		}
+		frmXray.certPinTaskCount = n;
+		frmXray.setTimeout(frmXray.pollCertPin,200);
+	};
 
 	frmXray.pollCertPin = function(){
 		var allDone = true;
-		for(t=1;frmXray.certPinTaskCount;1){
+		for(t=1,frmXray.certPinTaskCount,1){
 			var st = ..thread.get("certPinDone_" + t);
 			if(st === "processed") continue;
 			if(st === true){
 				var r = ..thread.get("certPinResult_" + t);
 				if(r){
-					var changed = false;
-					for(i=1;#r;1){
-						var item = r[i];
-						var ob = ..config.proxy.outbounds[item.index];
-						if(!ob) continue;
-						if(item.sha){
-							ob.pinnedPeerCertSha256 = item.sha;
-							changed = true;
-						}
-
+					var ob = ..config.proxy.outbounds[r.index];
+					if(ob && r.sha){
+						ob.pinnedPeerCertSha256 = r.sha;
+						successCount++;
 					}
-					frmXray.certPinDoneCount += #r;
-				//	if(changed) ..config.proxy.save();
+					frmXray.certPinDoneCount++;
 				}
 				..thread.set("certPinResult_" + t,null);
 				..thread.set("certPinDone_" + t,"processed");
@@ -3195,18 +3203,32 @@ frmXray.startCertPinFetch = function(){
 			}
 		}
 
-		frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal);
-
 		if(allDone){
-			frmXray.certPinRunning = false;
-			frmXray.edit.print("后台证书指纹获取完成。");
+			// ★ 进度号 = 本批最后处理的「列表位置」− (本次成功数 − 绕回基数)，下限 0
+			var pos = frmXray.certPinNodeAt(frmXray.certPinBatchEnd);
+			if(pos < lastPos) successBase = successCount;//检测到绕回 → 更新基数
+			lastPos = pos;
+			var next = pos - (successCount - successBase);
+			if(next < 0) next = 0;
+			..config.proxy.certPinProgress = next;//只写 config，不 save（丢失就丢失）
+
+			frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal);
+
+			batchPos = frmXray.certPinBatchEnd + 1;
+			if(batchPos > totalJobs){
+				frmXray.certPinRunning = false;
+				frmXray.edit.print("后台证书指纹获取完成。");
+			}
+			else {
+				frmXray.runCertPinBatch();
+			}
 		}
 		else {
-			frmXray.setTimeout(frmXray.pollCertPin,1000);
+			frmXray.setTimeout(frmXray.pollCertPin,200);
 		}
 	};
 
-	frmXray.setTimeout(frmXray.pollCertPin,1000);
+	frmXray.runCertPinBatch();
 };
 
 // 启动后延迟 6 秒开始（避开内核启动），完全在后台执行不阻塞界面
@@ -3356,7 +3378,6 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 		//isOnSearching = true;
 		frmXray.chkJustValid.checked = false;
 		config.proxy.chkJustValid=false;
-		frmXray.chkValidNoSearch.checked=true;
 		frmXray.chkAutoTest.checked=true
 		isManualSwitch = false;
 		/*
@@ -3591,7 +3612,9 @@ frmXray.searcherWatchdogTick = 0;// 最近一次调度进展时间（看门狗�
 frmXray.searcherDoneCount = 0;   // 已完成的搜索任务数（用于周期性进度日志）
 
 // 后台搜索时让列表视图「跟随显示」哪个槽位当前正在测试的节点行（便于人工观察）。
-// 设为 1 表示跟随槽位 1，设为其他正整数则跟随对应槽位；设为 null 或 0 表示不自动滚动。
+// 【开关】是否跟随由界面上的「跟踪搜索进度」复选框（chkFollowSearch）控制，
+//        勾选 = 跟随，取消勾选 = 不自动滚动（此时只在本轮开始时定位到起始行）。
+// 【本值】指定跟随「哪个槽位」的行：1 表示跟随槽位 1，其他正整数则跟随对应槽位。
 frmXray.searcherFollowSlot = 1;
 
 // 取下一个可测节点的索引并推进游标；返回 null 表示本轮已扫完
@@ -3666,7 +3689,7 @@ frmXray.dispatchSearchTask = function(slot){
 				frmXray.listview.setItemText("后台测试中", nodeIndex, 8);
 
 				// 跟随显示：让列表视图滚动到该槽位当前正在测试的节点行（便于人工观察）
-				if(frmXray.searcherFollowSlot && slot == frmXray.searcherFollowSlot){
+				if(frmXray.chkFollowSearch.checked && slot == frmXray.searcherFollowSlot){
 					frmXray.listview.ensureVisible(nodeIndex);
 				}
 
@@ -3859,7 +3882,7 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 
         // 未启用「跟随槽位」时，才在本轮开始时把列表视图定位到本轮第一个服务器所在行；
         // 启用跟随时由 dispatchSearchTask 持续跟随，避免两者互相拉扯。
-        if(!frmXray.searcherFollowSlot && frmXray.listview && startIndex){
+        if(!frmXray.chkFollowSearch.checked && frmXray.listview && startIndex){
             frmXray.listview.selIndex = startIndex;
             frmXray.listview.ensureVisible(startIndex);
         }
@@ -4170,22 +4193,15 @@ frmXray.onSearcherSucces = function(outboundIndex,outbound,success,slot,roundId)
 	
 }
 
-//已测通不参加搜索复选框 响应函数
-frmXray.chkValidNoSearch.oncommand = function(id,event){
-	 config.proxy.chkValidNoSearch=frmXray.chkValidNoSearch.checked;
-/*
-	if(frmXray.chkValidNoSearch.checked){ 
-		frmXray.chkJustValid.checked=false;
-		config.proxy.chkJustValid = false;
-	}
-*/
+//跟踪搜索进度复选框 响应函数
+frmXray.chkFollowSearch.oncommand = function(id,event){
+	config.proxy.chkFollowSearch = frmXray.chkFollowSearch.checked;
 }
 
 //仅连接已测通复选框
 frmXray.chkJustValid.oncommand = function(id,event){
 	config.proxy.chkJustValid=frmXray.chkJustValid.checked;
 	if(frmXray.chkJustValid.checked) {
-		//frmXray.chkValidNoSearch.checked=false;
 		//frmXray.chkSearchMode.checked = false;
 		//frmXray.chkSearchMode.oncommand();
 		//isManualSwitch = false;

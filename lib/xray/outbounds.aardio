@@ -840,40 +840,54 @@ importFromString = function(str,subscribeUrl,subps){
 
 		if(!str) return;
 	}		
-//从yaml格式导入proxy-providers订阅
-// 【模式匹配】检测 YAML 中的 proxy-providers 段落。[\r\n]*=任意个回车换行；\s*=任意空白；\:=字面冒号
-	if(..string.match(str,"[\r\n]*proxy-providers\s*\:")){
-		
-		//debug.debug();
-		
-		var urlmap = importFromClash(str,false);
-		if(#urlmap){
-			// 注意：解析可能在后台线程执行，此时 ..mainForm 为 null，
-			// 因此这里只写日志，不做任何界面提示。
-			debug.log.print('发现了 '+#urlmap+' 个订阅，正在导入中');
-			var outbounds = ..table.array();
-			for(i=1;#urlmap;1){
-				var impOutbounds = importFromUrl(urlmap[i]);
-				if(impOutbounds){
-					..table.append(outbounds,impOutbounds);
+//从 yaml 格式导入 clash 配置（proxy-providers 远程订阅 + proxies 本地节点）
+// 【模式匹配】检测 YAML 中的 proxy-providers / proxies 段落。[\r\n]*=任意个回车换行；\s*=任意空白；\:=字面冒号
+//
+// ★ 性能：先用 string.indexOf 做字面预筛，再跑模式匹配。
+//   这个模式本身只是「整串是否含 xxx:」，但模式引擎会逐字节扫描整串，
+//   实测 188KB 的订阅文件要 375 毫秒（纯浪费）。indexOf 是原生实现，几乎零成本。
+//
+// ★★ 两段可能同时存在（很多订阅 = 远程 provider + 本地节点）。
+//    旧实现只要 provider 里提取到网址就直接 return，会把本地节点整段丢掉
+//    （实测：两段都有的配置返回 0 个节点）。现在两段都处理并合并。
+	var hasProvider = ..string.indexOf(str,"proxy-providers") && ..string.match(str,"[\r\n]*proxy-providers\s*\:");
+	var hasProxies = ..string.indexOf(str,"proxies") && ..string.match(str,"[\r\n]*proxies\s*\:");
+
+	if( hasProvider || hasProxies ){
+		var clashMerged = ..table.array();
+		var clashHandled = false;
+
+		//① proxy-providers：其中的 url 是「订阅源网址」，需要联网抓取
+		if( hasProvider ){
+			var urlmap = importFromClash(str,false);
+			if(#urlmap){
+				// 注意：解析可能在后台线程执行，此时 ..mainForm 为 null，
+				// 因此这里只写日志，不做任何界面提示。
+				debug.log.print('发现了 '+#urlmap+' 个订阅，正在导入中');
+				clashHandled = true;
+				for(i=1;#urlmap;1){
+					var impOutbounds = importFromUrl(urlmap[i]);
+					if(impOutbounds){
+						..table.append(clashMerged,impOutbounds);
+					}
 				}
 			}
-			return outbounds; 
+		}
+
+		//② proxies：本文件内的节点
+		if( hasProxies ){
+			var localNodes = clashNodesToOutbounds(str,subscribeUrl);
+			if( localNodes ){
+				clashHandled = true;
+				..table.append(clashMerged,localNodes);
+			}
+		}
+
+		if( clashHandled ){
+			return clashMerged;
 		}
 	}
-	
-	
-//从yaml格式导入clash节点
-// 【模式匹配】检测 YAML 中的 proxies 段落，规则同上
-	if(..string.match(str,"[\r\n]*proxies\s*\:")){
-				
-		//debug.debug();
-		
-		var strTemp = importFromClash(str,true);
-    	if(strTemp){
-    		str = strTemp
-    	}
-    }
+
     
     
     //debug.debug()
@@ -923,6 +937,13 @@ importFromString = function(str,subscribeUrl,subps){
 			
 		//debug.debug();
 		
+		//从 Clash 的 JSON 配置导入（顶层含 proxies 数组）
+		//（有些订阅源/转换器输出的是「Clash JSON」而不是 YAML，必须也能吃下）
+		if( type(jsonData[["proxies"]])=="table" && #jsonData[["proxies"]] ){
+			var cjOutbounds = clashProxiesToOutbounds(jsonData[["proxies"]],subscribeUrl);
+			if(#cjOutbounds) return cjOutbounds;
+		}
+
 		//从 sing-box 配置导入（顶层含 outbounds 数组）
 		if( ..table.isArrayLike(jsonData[["outbounds"]]) && #jsonData[["outbounds"]] ){
 			var sbOutbounds = importFromSingbox(jsonData);
@@ -2651,8 +2672,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 						..thread.set(key,null);		// 立即释放跨线程共享区内存
 						if(type(nodes)==type.table){
 							var added = addNodes(nodes);	// ← 完成一批就立即去重合并
-							if(added) debug.log.print("[任务] " ++ tasks[pk].url ++ "获得" ++ #nodes ++ "个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
-							else debug.log.print("[任务] " ++ tasks[pk].url ++ " 获取0个节点 ");
+							debug.log.print("[任务] " ++ tasks[pk].url ++ "获得" ++ #nodes ++ "个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
+						//	else debug.log.print("[任务] " ++ tasks[pk].url ++ " 获取0个节点 ");
 						}
 						
 					}
@@ -2806,133 +2827,691 @@ var currentActiveOutbound = ..globalActiveOutbound;
 	..publish("uiCommand.print","已自动刷新" + count + "个订阅服务器。")		 
 } )
 
-importFromClash = function(str,node){
-	
+// ==========================================================================
+// YAML 子集解析器（供 importFromClash 使用）
+//
+// 旧实现用「模式匹配替换 + 缩进猜测」把 YAML 硬转成 aardio 表文本：
+//   · 数组项的减号「顶格」写法（proxies: 顶格 + "- name: xxx"，完全合法的 YAML）
+//     因为算出的数组缩进等级为 0，走不到任何分支而被【静默丢弃】整行
+//     （连 name 字段都没有了）；
+//   · 嵌套结构（ws-opts / reality-opts）也会丢字段；
+//   · 最终产物里节点还会互相粘连（udp: truetype: vless,...），一个节点都解析不出来。
+//
+// 这里改为真正的「缩进感知」解析器：
+//   · 映射 / 序列（减号可在任意缩进，含顶格写法）
+//   · 嵌套按缩进处理
+//   · 行内流式映射 {k: v} 与流式序列 [a, b]
+//   · 单引号 / 双引号字符串（含转义）、行尾注释、布尔 / null 标量
+//   · 按「宁导错，不错过」原则：结构异常时保留原始文本，绝不静默丢字段
+// ==========================================================================
 
-	
-    if(node){//如果包含结点
-    	var start = false;var strTemp="";
-    	var levelTable = ..table.array();
-    	var levelATable = ..table.array();
-    	var levelLast = 0;
-    	var levelALast = 0;
-    	
-    //	debug.debug()
-    	//如果是非table形式的格式转为table格式的
-// 【模式匹配】判断内容中是否含 {}，%\{\} 中的 % 把花括号转义为字面值
-    	if( !..string.match(str,"%\{\}") ){
-    	    //console.dump(str)
-    	    //debug.log.print()
-// 【模式匹配】把换行统一替换为逗号。[<\r\n><\n\r>\r\n]=三个替换项任选其一（尖括号是分组，表示或）
-    	    var temp1 = ..string.replace(str,"[<\r\n><\n\r>\r\n]",",");
-// 【模式匹配】把连续的两个逗号替换为 空格逗号空格
-    	    temp1 = ..string.replace(temp1,"\,\,"," , "); 
-    	    //temp1 = ..string.replace(temp1,"\ ",""); 
-    	    //console.dump(temp1) 
-    	    //debug.log.print()
-    	    
-    		//debug.debug()	    
-// 【模式匹配】把 YAML 的短横线列表转成 aardio 表写法。<-\s+>=减号加一个以上空白
-    		temp1 = ..string.replace(temp1,"<\-\s+>",'\ \}\n\ \-\ \{');    		
-    		//console.dump(temp1)
-			//debug.log.print()
-			
-    			
-    		//console.dump(temp1)
-    		//debug.log.print()
-			
-    		return temp1;  
-    	}
-    	
-    	for(line in ..string.lines(str) ){
-        	//删除注释字段和空白行
-        	line = ..string.splitEx(line,'\#')[1];
-// 【模式匹配】匹配空行。^\s*$=整行只有空白（或为空）
-        	if( line===null || ..string.match(line,"^\s*$") ){continue;}
-        	//确定proxies范围
-// 【模式匹配】匹配以字母开头的行。^\a=串首为一个字母
-        	if(..string.match(line,"^\a")){
-				if(..string.startWith(line,"proxies")){start = true;continue;}
-				else {if(start){break;}continue;}
+//YAML 锚点/别名上下文（&name / *name / <<: *name）。
+//放在命名空间级局部变量里，由 yamlParse 在每次解析前重置。
+var yamlAnchors;
+
+//去掉行尾注释（# 只有在引号外、且前面是空白或行首时才算注释）
+yamlStripComment = function(line){
+	//快速路径：不含 # 的行直接返回（indexOf 是原生实现，比逐字节扫描快得多）
+	if( !..string.indexOf(line,"#") ) return line;
+
+	var inS,inD = false,false;
+	var i = 1;
+	while( i <= #line ){
+		var ch = line[i];
+		if( inD ){
+			if( ch === 0x5C ){ i += 2; continue; }
+			if( ch === 0x22 ) inD = false;
+		}
+		elseif( inS ){
+			if( ch === 0x27 ) inS = false;
+		}
+		elseif( ch === 0x22 ) inD = true;
+		elseif( ch === 0x27 ) inS = true;
+		elseif( ch === 0x23 ){
+			if( i === 1 || line[i-1] === 0x20 || line[i-1] === 0x09 ){
+				return ( i === 1 ) ? "" : ..string.left(line,i-1);
 			}
-			//开始解析数据
-			if(start){
-				
-				//debug.debug()
-				
-// 【模式匹配】匹配「- {}」形式的行。^\s*\-\s*=开头空白加减号加空白；(%\{\})=字面 {}；\s*$=结尾空白
-				if( ..string.match(line,"^\s*\-\s*%\{\}\s*$") ){strTemp += line+'\n';}//匹配到-｛｝
-// 【模式匹配】条件取反，即该行不是「- {}」形式
-    			elseif( !..string.match(line,"^\s*\-\s*%\{\}\s*$") ){
-// 【模式匹配】取键的缩进量。^(\s*)\a=串首的任意空白加一个字母，外层 # 取捕获组长度
-    				var numNow = #(..string.match(line,"^(\s*)\a"));//键缩进量
-// 【模式匹配】取数组项的缩进量。^(\s*)\-=串首的任意空白加一个减号
-    				var numANow = #(..string.match(line,"^(\s*)\-"));//数组缩进量
-    				//确定数组缩进等级
-    				var levelA;
-    				for(index,num in levelATable){if(num == numANow){levelA=index;break;}}
-    				if(!levelA && numANow){
-    					..table.push(levelATable,numANow);
-    					levelA=..table.count(levelATable);
-    				}
-    				elseif(!levelA && !numANow){levelA=0}
+		}
+		i++;
+	}
+	return line;
+};
 
-    				if( levelA>1 ){
-// 【模式匹配】去掉行首的减号。^\s*(-)=串首空白加一个减号
-    					line = ..string.replace(line,"^\s*(-)",'');
-// 【模式匹配】重新计算去掉减号后的缩进量，规则同 2002 行
-    					numNow = #(..string.match(line,"^(\s*)\a"));
-    				}
-    				elseif( levelA==1 ){
-    					var temp = '\n-{';
-    					if(levelLast){for(i=1;levelLast;1){temp = '}'+temp;}}
-// 【模式匹配】把行首的 减号加空白 替换为指定前缀。^\s*-\s*=串首空白、减号、空白
-    					line = ..string.replace(line,"^\s*-\s*",temp);
-    				}
+//按顶层分隔符拆分（跳过引号与括号内部），用于流式 {..} / [..]
+yamlSplitTop = function(s,sep){
+	sep = sep : 0x2C;
+	var parts = {};
+	var inS,inD = false,false;
+	var depth = 0;
+	var start = 1;
+	var i = 1;
+	while( i <= #s ){
+		var ch = s[i];
+		if( inD ){
+			if( ch === 0x5C ){ i += 2; continue; }
+			if( ch === 0x22 ) inD = false;
+		}
+		elseif( inS ){
+			if( ch === 0x27 ) inS = false;
+		}
+		elseif( ch === 0x22 ) inD = true;
+		elseif( ch === 0x27 ) inS = true;
+		elseif( ch === 0x7B || ch === 0x5B ) depth++;
+		elseif( ch === 0x7D || ch === 0x5D ) depth--;
+		elseif( ch === sep && depth === 0 ){
+			..table.push(parts,..string.trim(..string.slice(s,start,i-1)));
+			start = i+1;
+		}
+		i++;
+	}
+	..table.push(parts,( start <= #s ) ? ..string.trim(..string.slice(s,start,-1)) : "");
+	return parts;
+};
 
-// 【模式匹配】匹配「- name:」形式的数组项起始。^\}*\n\-\{\s*\a=可选的右花括号、换行、减号、左花括号、空白、字母
-    				if( ..string.match(line,"^\}*\n\-\{\s*\a") ){strTemp += line+","}//-name:1
-// 【模式匹配】匹配单独的「}-」行。^\}\n\-\{\s*$=右花括号、换行、减号、左花括号、结尾空白
-    				elseif( ..string.match(line,"^\}\n\-\{\s*$") ){strTemp += line}//-
+//拆「键: 值」；loose 为真时冒号后可以不跟空白（流式映射用）
+yamlSplitKey = function(text,loose){
+	//快速路径：不含引号的行用原生 string.find 定位（比逐字节扫描快得多）
+	//★ 注意：不要用 "^([^:]*)\:..." 这种模式 —— aardio 模式里的 [^:] 并不可靠
+	//  （实测会把 "proxies: [{name: A, port: 443}]" 在最后一个冒号处切开，
+	//   导致键名变成 "proxies: [{name: A, port"）。
+	if( !..string.indexOf(text,"'") && !..string.indexOf(text,'"') ){
+		var k,v,s;
 
-    				levelALast = levelA;
-    				//确定键缩进等级
-    				var level;
-    				for(index,num in levelTable){if(num=numNow){level=index;break;}}
-    				if(!level && numNow){..table.push(levelTable,numNow);level=..table.count(levelTable);}
-    				elseif(!level && !numNow){level=0}
-
-// 【模式匹配】匹配「name:」形式的键（值为空）。^\s*\a[^\s\:]*(\:)\s*$=开头空白、字母、非空白非冒号字符、冒号、结尾空白
-    				if( ..string.match(line,"^\s*\a[^\s\:]*(\:)\s*$") ){//name:
-    					line = ..string.trim(line);
-    					if( levelLast>0 && level>levelLast ){strTemp += line+"{"}
-    					elseif( level==levelLast ){strTemp += ","+line+"{"}
-    					elseif( level<levelLast ){strTemp += "}"+line+"{"}
-    				}
-// 【模式匹配】匹配「name:值」形式。^\s*\a[^\:]*\:?\s*[^\s]*\s*$=开头空白、字母、非冒号字符、可选冒号、可选空白、值、结尾空白
-    				elseif( ..string.match(line,"^\s*\a[^\:]*\:?\s*[^\s]*\s*$") ){//name:1
-    					line = ..string.trim(line);
-    					if( levelLast==0 || level>levelLast ){strTemp += line}
-    					elseif( levelLast>0 && level<levelLast){strTemp += "},"+line}
-    					elseif( level==levelLast ){strTemp += ","+line}
-    				}
-
-    				levelLast = level;
-    			}
-    		}
-    	}
-    	var match1 = ..table.count(..string.matches(strTemp,"\{"));
-		var match2 = ..table.count(..string.matches(strTemp,"\}"));
-		for(i=1;match1-match2;1){
-			strTemp += "}";
+		//① 第一个「冒号 + 空白」处就是键值分隔
+		s = ..string.find(text,"\:[ \t]");
+		if( s && s > 1 ){
+			k = ..string.trim(..string.left(text,s-1));
+			v = ( s + 2 <= #text ) ? ..string.trim(..string.slice(text,s+2,-1)) : null;
+			if( #k ) return k,v;
 		}
 
-    	if( #(..string.trim(strTemp)) ){
-    		str = ..string.trim(strTemp);
-    		//debug.debug()
-    		return strTemp; 
-    	}	
-    }
+		//② 行尾冒号 → 键的值为空
+		if( #text > 1 && text[#text] === 0x3A ){
+			k = ..string.trim(..string.left(text,#text-1));
+			if( #k ) return k,null;
+		}
+
+		//③ 宽松模式（流式映射）：冒号后可以不跟空白
+		if( loose ){
+			s = ..string.find(text,"\:");
+			if( s && s > 1 ){
+				k = ..string.trim(..string.left(text,s-1));
+				v = ( s + 1 <= #text ) ? ..string.trim(..string.slice(text,s+1,-1)) : null;
+				if( #k ) return k,v;
+			}
+		}
+		return null;
+	}
+
+	var inS,inD = false,false;
+	var i = 1;
+	while( i <= #text ){
+		var ch = text[i];
+		if( inD ){
+			if( ch === 0x5C ){ i += 2; continue; }
+			if( ch === 0x22 ) inD = false;
+		}
+		elseif( inS ){
+			if( ch === 0x27 ) inS = false;
+		}
+		elseif( ch === 0x22 ) inD = true;
+		elseif( ch === 0x27 ) inS = true;
+		elseif( ch === 0x3A ){
+			if( loose || i === #text || text[i+1] === 0x20 || text[i+1] === 0x09 ){
+				var key = ..string.trim( ..string.slice(text,1,i-1) );
+				key = ..string.trim(key,'"\'');
+				if( !#key ) return null;
+				return key,( i < #text ) ? ..string.trim( ..string.slice(text,i+1,-1) ) : null;
+			}
+		}
+		i++;
+	}
+	return null;
+};
+
+//解析流式映射 {k: v, ...}
+//流式集合的括号平衡度（>0 表示还没闭合，需要继续读后续行）；跳过引号内部
+yamlFlowBalance = function(s){
+	var inS,inD = false,false;
+	var depth = 0;
+	var i = 1;
+	while( i <= #s ){
+		var ch = s[i];
+		if( inD ){
+			if( ch === 0x5C ){ i += 2; continue; }
+			if( ch === 0x22 ) inD = false;
+		}
+		elseif( inS ){
+			if( ch === 0x27 ) inS = false;
+		}
+		elseif( ch === 0x22 ) inD = true;
+		elseif( ch === 0x27 ) inS = true;
+		elseif( ch === 0x7B || ch === 0x5B ) depth++;
+		elseif( ch === 0x7D || ch === 0x5D ) depth--;
+		i++;
+	}
+	return depth;
+};
+
+//注意：for(i,v in fn()) 中 fn() 会被当作「迭代器工厂」，返回表时会报
+//      「Attempt to call Type:table」，所以必须用括号包围：(fn())
+yamlParseFlowMap = function(s){
+	var map = {};
+	if( !#s ) return map;
+	for(i,part in (yamlSplitTop(s))){
+		if( !#part ) continue;
+		var key,val = yamlSplitKey(part,true);
+		if( key === null ) continue;
+		map[key] = yamlParseScalar(val);
+	}
+	return map;
+};
+
+//解析流式序列 [a, b, ...]
+yamlParseFlowSeq = function(s){
+	var arr = [];
+	if( !#s ) return arr;
+	for(i,part in (yamlSplitTop(s))){
+		if( !#part ) continue;
+		..table.push(arr,yamlParseScalar(part));
+	}
+	return arr;
+};
+
+//解析标量（字符串 / 布尔 / null / 流式集合）
+//注意：数字一律保留为字符串 —— 密码等字段若被转成数值，
+//      后续生成配置时会变成 12345 而不是 "12345"，反而容易出错。
+yamlParseScalar = function(s){
+	if( s === null ) return null;
+	s = ..string.trim(s);
+	if( !#s ) return null;
+
+	var c1 = s[1];
+	var cN = s[#s];
+
+	//双引号字符串（处理 \n \t \r \" \\ \/ 以及 \xXX \uXXXX \UXXXXXXXX 转义）
+	if( c1 === 0x22 && cN === 0x22 && #s >= 2 ){
+		if( #s === 2 ) return "";
+		var body = ..string.slice(s,2,-2);
+		var sb = {};
+		var i = 1;
+		while( i <= #body ){
+			var ch = body[[i]];
+			if( ch === '\\' ){
+				var nx = body[[i+1]];
+				if( nx === "n" ){ ..table.push(sb,'\n'); i += 2; }
+				elseif( nx === "t" ){ ..table.push(sb,'\t'); i += 2; }
+				elseif( nx === "r" ){ ..table.push(sb,'\r'); i += 2; }
+				elseif( nx === "u" || nx === "U" || nx === "x" ){
+					//\xXX(2位) / \uXXXX(4位) / \UXXXXXXXX(8位)
+					//订阅源常用 \U0001F1EB 这种写法表示国旗等 emoji，必须还原成真字符
+					var n = ( nx === "U" ) ? 8 : ( ( nx === "u" ) ? 4 : 2 );
+					var hex = ( i + 1 + n <= #body ) ? ..string.slice(body,i+2,i+1+n) : null;
+					var code = ( hex && ..string.match(hex,"^[0-9a-fA-F]+$") ) ? tonumber(hex,16) : null;
+					if( code ){
+						..table.push(sb,..string.fromCharCode(code));
+						i += 2 + n;
+					}
+					else {
+						..table.push(sb,nx);
+						i += 2;
+					}
+				}
+				elseif( nx ){ ..table.push(sb,nx); i += 2; }
+				else i++;
+			}
+			else {
+				..table.push(sb,ch);
+				i++;
+			}
+		}
+		return ..string.join(sb);
+	}
+
+	//单引号字符串（'' 表示一个 '）
+	if( c1 === 0x27 && cN === 0x27 && #s >= 2 ){
+		if( #s === 2 ) return "";
+		return ..string.replace( ..string.slice(s,2,-2), "''","'" );
+	}
+
+	//流式集合：① 先按 JSON 解析 —— JSON 流式写法很常见，而且 aardio 的 JSON
+	//            解析器还能容忍「键不加引号」的 YAML 流式写法，是最精确的一条路
+	//          ② 再按 YAML 流式语法解析（兜底）
+	if( c1 === 0x7B && cN === 0x7D ){
+		var j = ..web.json.tryParse(s);
+		if( type(j)=="table" ) return j;
+		return yamlParseFlowMap( (#s > 2) ? ..string.slice(s,2,-2) : "" );
+	}
+	if( c1 === 0x5B && cN === 0x5D ){
+		var j = ..web.json.tryParse(s);
+		if( type(j)=="table" ) return j;
+		return yamlParseFlowSeq( (#s > 2) ? ..string.slice(s,2,-2) : "" );
+	}
+
+	var low = ..string.lower(s);
+	if( low === "true" ) return true;
+	if( low === "false" ) return false;
+	if( low === "null" || s === "~" ) return null;
+
+	return s;
+};
+
+//按缩进解析一个块；返回 值, 下一个待处理行号
+yamlParseBlock = function(lines,idx,indent){
+	if( idx > #lines ) return null,idx;
+	var first = lines[idx];
+	if( !first || first.indent < indent ) return null,idx;
+
+	//序列
+	if( first.isSeq ){
+		var arr = [];
+		while( idx <= #lines ){
+			var it = lines[idx];
+			if( !it ) break;
+			//★ 缩进比本块更深的「游离行」（未被上层消费掉的）只跳过、绝不中断：
+			//  否则一行异常就会让后面整个文档全部丢失（旧版曾因此一次丢几百个节点）。
+			if( it.indent > indent ){ idx++; continue; }
+			if( it.indent < indent ) break;
+			if( !it.isSeq ) break;   //同缩进的映射键 → 序列到此结束
+
+			var ci = it.contentIndent;
+			var ct = it.content;
+
+			//★ YAML 锚点（数组项）：`- &name` 或 `- &name key: value`
+			var aName;
+			if( #ct && ct[1] === 0x26 ){
+				var aRest;
+				aName,aRest = ..string.match(ct,"^\&(\S+)\s*(.*)$");
+				if( aName ) ct = aRest ? aRest : "";
+			}
+
+			//「-」后面没有内容 → 值在后续行
+			if( !#ct ){
+				var nx = lines[idx+1];
+				if( nx && ( nx.indent > indent || ( nx.indent === indent && nx.isSeq ) ) ){
+					var v;
+					v,idx = yamlParseBlock(lines,idx+1,nx.indent);
+					..table.push(arr,v);
+					if( aName ) yamlAnchors[aName] = v;
+				}
+				else {
+					..table.push(arr,null);
+					idx++;
+				}
+				continue;
+			}
+
+			//★ 按「项的风格」分派到专用解析器（不要用一种通用逻辑硬套所有风格：
+			//  实测把流式项丢给块式逻辑会解析出「键名带花括号」的垃圾数据）。
+			//    ① 流式/JSON 项（以 { 或 [ 开头，可能跨多行）→ 流式解析器
+			//    ② 块式项（其余）→ 缩进感知的块式解析器
+			var c1 = ct[1];
+			if( c1 === 0x7B || c1 === 0x5B ){
+				//流式集合可能跨多行：按括号平衡把后续行拼进来
+				var flowText = ct;
+				while( yamlFlowBalance(flowText) > 0 && idx < #lines ){
+					idx++;
+					flowText = flowText ++ " " ++ ..string.trim(lines[idx].text);
+				}
+				idx++;
+				..table.push(arr,yamlParseScalar(flowText));
+				continue;
+			}
+
+			//块式：数组项本身是「键: 值」→ 该项是一个映射，首键写在减号这一行
+			var key,val = yamlSplitKey(ct);
+			if( key !== null ){
+				var obj = {};
+
+				//★ 锚点/别名/合并键（与映射分支同一套规则）
+				var aVal;
+				if( type(val)=="string" && val[1] === 0x26 ){
+					var aRest;
+					aVal,aRest = ..string.match(val,"^\&(\S+)\s*(.*)$");
+					val = ( aRest && #aRest ) ? aRest : null;
+					if( !aVal ) val = null;
+				}
+
+				if( key === "<<" ){
+					//合并键：把锚定的映射并进来（显式键优先）
+					var mAlias = ( type(val)=="string" ) ? ..string.match(val,"^\*(\S+)$") : null;
+					var mMerged = mAlias ? yamlAnchors[mAlias] : null;
+					if( type(mMerged)=="table" ){ for(k,v in mMerged){ if(obj[k]===null) obj[k] = v; } }
+					idx++;
+				}
+				elseif( type(val)=="string" && val[1] === 0x2A ){
+					var sAlias = ..string.match(val,"^\*(\S+)$");
+					obj[key] = sAlias ? yamlAnchors[sAlias] : yamlParseScalar(val);
+					idx++;
+				}
+				elseif( val === null ){
+					var nx = lines[idx+1];
+					if( nx && ( nx.indent > ci || ( nx.indent === ci && nx.isSeq ) ) ){
+						var v;
+						v,idx = yamlParseBlock(lines,idx+1,nx.indent);
+						obj[key] = v;
+						if( aVal ) yamlAnchors[aVal] = v;
+					}
+					else {
+						obj[key] = null;
+						idx++;
+					}
+				}
+				else {
+					obj[key] = yamlParseScalar(val);
+					if( aVal ) yamlAnchors[aVal] = obj[key];
+					idx++;
+				}
+
+				//继续读取同一映射的其余键（缩进与首键对齐）
+				var nx2 = lines[idx];
+				if( nx2 && nx2.indent === ci && !nx2.isSeq ){
+					var more;
+					more,idx = yamlParseBlock(lines,idx,ci);
+					if( type(more)=="table" ){
+						for(k,v in more){ obj[k] = v; }
+					}
+				}
+
+				..table.push(arr,obj);
+				if( aName ) yamlAnchors[aName] = obj;
+				continue;
+			}
+
+			//纯标量项
+			..table.push(arr,yamlParseScalar(ct));
+			idx++;
+		}
+		return arr,idx;
+	}
+
+	//映射
+	var map = {};
+	while( idx <= #lines ){
+		var it = lines[idx];
+		if( !it ) break;
+		//同上：更深的游离行只跳过，不中断
+		if( it.indent > indent ){ idx++; continue; }
+		if( it.indent < indent ) break;
+		if( it.isSeq ) break;   //同缩进的数组项 → 映射到此结束
+
+		var key,val = yamlSplitKey(it.text);
+		if( key === null ){
+			idx++;   //异常行：跳过，避免死循环
+			continue;
+		}
+
+		//★ YAML 锚点：`&name` 只是给这个节点起一个可复用的名字，本身不是值。
+		//  例：proxies: &id001 ← 后面跟着整个节点数组（PyYAML 常见输出）
+		var anchorName;
+		if( type(val)=="string" && val[1] === 0x26 ){
+			var aRest;
+			anchorName,aRest = ..string.match(val,"^\&(\S+)\s*(.*)$");
+			val = ( aRest && #aRest ) ? aRest : null;
+			if( !anchorName ) val = null;   //防御：格式异常就当没有值
+		}
+
+		//★ YAML 合并键 `<<: *name`：把锚定的映射合并进当前映射（显式键优先）
+		if( key === "<<" ){
+			var mAlias = ( type(val)=="string" ) ? ..string.match(val,"^\*(\S+)$") : null;
+			var mMerged = mAlias ? yamlAnchors[mAlias] : null;
+			if( type(mMerged)=="table" ){
+				for(k,v in mMerged){ if(map[k]===null) map[k] = v; }
+			}
+			idx++;
+			continue;
+		}
+
+		//★ YAML 别名 `key: *name`：引用之前锚定的节点
+		if( type(val)=="string" && val[1] === 0x2A ){
+			var sAlias = ..string.match(val,"^\*(\S+)$");
+			if( sAlias ){
+				map[key] = yamlAnchors[sAlias];
+				idx++;
+				continue;
+			}
+		}
+
+		if( val === null ){
+			var nx = lines[idx+1];
+			if( nx && ( nx.indent > indent || ( nx.indent === indent && nx.isSeq ) ) ){
+				var v;
+				v,idx = yamlParseBlock(lines,idx+1,nx.indent);
+				map[key] = v;
+				if( anchorName ) yamlAnchors[anchorName] = v;
+			}
+			else {
+				map[key] = null;
+				idx++;
+			}
+		}
+		else {
+			//★ YAML 折行标量：标量值之后、缩进更深的行是它的「续行」。例如
+			//    User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+			//      like Gecko) Chrome/70.0.3538.77 Safari/537.36
+			//  必须合并进同一个值，否则这些行会变成「游离行」，
+			//  在旧逻辑里会让整个序列提前中断（一次丢掉几百个节点）。
+			var valFull = val;
+			var nx = lines[idx+1];
+			while( nx && nx.indent > indent ){
+				var t = ..string.trim(nx.text);
+				//防御：看起来像「键: 值」或数组项的行不当作续行，避免吞掉子树
+				if( ..string.match(t,"^\-\s") ) break;
+				if( yamlSplitKey(t) !== null ) break;
+				valFull = valFull ++ " " ++ t;
+				idx++;
+				nx = lines[idx+1];
+			}
+			map[key] = yamlParseScalar(valFull);
+			if( anchorName ) yamlAnchors[anchorName] = map[key];
+			idx++;
+		}
+	}
+	return map,idx;
+};
+
+//解析 YAML 文本中指定根键下的内容（用于 proxies: 段）
+yamlParse = function(str,rootKey){
+	//预处理：拆行 → 去注释 → 算缩进 → 丢弃空行
+	//★ 必须用 string.split 而不是 string.lines 迭代器：实测同样 3800 行，
+	//  string.split 约 0 毫秒，而 lines 迭代器要约 250 毫秒（相差上千倍），
+	//  是整个解析耗时的主要来源。
+	//  按 '\r\n' 拆分可同时兼容 CRLF / LF / CR 三种换行（空行会被下面的检查丢弃）。
+	yamlAnchors = {};   //每次解析都重置锚点表
+
+	var rawLines = ..string.split(str,'\r\n');
+	var lines = [];
+	for(i=1;#rawLines;1){
+		var line = yamlStripComment(rawLines[i]);
+		line = ..string.trimright(line);
+		if( !#line ) continue;
+
+		var ind = #( ..string.match(line,"^(\s*)") );
+		var text = ..string.trim(line);
+		if( !#text ) continue;
+
+		var isSeq = ..string.startWith(text,"- ") || text === "-";
+		var item = {
+			indent = ind;
+			text = text;
+			isSeq = isSeq;
+		};
+
+		if( isSeq ){
+			var rest = ( #text > 1 ) ? ..string.slice(text,2,-1) : "";
+			var lead = ..string.match(rest,"^(\s*)");
+			item.contentIndent = ind + 1 + ( lead ? #lead : 0 );
+			item.content = ..string.trim(rest);
+		}
+
+		..table.push(lines,item);
+	}
+	if( !#lines ) return null;
+
+	//找到根键（取缩进最小的那个）
+	var rootIdx,rootIndent = null,null;
+	for(i=1;#lines;1){
+		var it = lines[i];
+		if( it.isSeq ) continue;
+		var key,val = yamlSplitKey(it.text);
+		if( key !== rootKey ) continue;
+		if( rootIdx === null || it.indent < rootIndent ){
+			rootIdx = i;
+			rootIndent = it.indent;
+		}
+	}
+	if( rootIdx === null ) return null;
+
+	var it = lines[rootIdx];
+	var key,val = yamlSplitKey(it.text);
+
+	//★ 根键的值也可能带锚点：`proxies: &id001` ← 后面跟着整个节点数组。
+	//  （PyYAML 常见输出，不处理会把 "&id001" 当成值，整段解析不出来）
+	if( type(val)=="string" && val[1] === 0x26 ){
+		var aName,aRest = ..string.match(val,"^\&(\S+)\s*(.*)$");
+		val = ( aRest && #aRest ) ? aRest : null;
+	}
+
+	if( val !== null ) return yamlParseScalar(val);   //proxies: [...] 行内写法
+
+	//★ 预扫「文档其它顶层键里定义的锚点」（例如 base: &base 后跟一个共享配置块）。
+	//  这类锚点会被 proxies 段里的 `<<: *base` / `*base` 引用；
+	//  不预先登记就找不到定义，合并键会静默失效（实测节点会丢掉 type 等字段）。
+	//  只解析「顶层且带锚点」的键，其余顶层键（如 rules）直接跳过，避免白白解析整个文档。
+	for(i=1;#lines;1){
+		var pit = lines[i];
+		if( pit.isSeq || pit.indent !== 0 || i === rootIdx ) continue;
+		var pk,pv = yamlSplitKey(pit.text);
+		if( type(pv)!="string" || pv[1] !== 0x26 ) continue;
+
+		var pAnchor = ..string.match(pv,"^\&(\S+)");
+		if( !pAnchor ) continue;
+
+		var pnx = lines[i+1];
+		if( pnx && ( pnx.indent > pit.indent || ( pnx.indent === pit.indent && pnx.isSeq ) ) ){
+			yamlAnchors[pAnchor] = yamlParseBlock(lines,i+1,pnx.indent);
+		}
+		elseif( #pv > #pAnchor + 1 ){
+			//`key: &anchor 值` 这种「带锚点的标量」
+			yamlAnchors[pAnchor] = yamlParseScalar( ..string.trim( ..string.slice(pv,#pAnchor+2,-1) ) );
+		}
+		else {
+			yamlAnchors[pAnchor] = null;
+		}
+	}
+
+	var nx = lines[rootIdx+1];
+	if( !nx ) return null;
+	if( !( nx.indent > it.indent || ( nx.indent === it.indent && nx.isSeq ) ) ) return null;
+
+	return yamlParseBlock(lines,rootIdx+1,nx.indent);
+};
+
+//把 Clash 代理表展开为「下游能识别的扁平字段」：
+//validOutbound 只认 ws-path / ws-headers 这类旧写法，
+//REALITY 的内部字段名本来就是 public-key / short-id / spider-x。
+//其余字段一律原样保留（宁导错，不错过）。
+clashFlattenProxy = function(p){
+	var o = {};
+	for(k,v in p){ o[k] = v; }
+
+	var ws = p["ws-opts"];
+	if( type(ws)=="table" ){
+		if( ws.path ) o["ws-path"] = ws.path;
+		if( ws.headers ) o["ws-headers"] = ws.headers;
+	}
+
+	var ro = p["reality-opts"];
+	if( type(ro)=="table" ){
+		if( ro["public-key"] ) o["public-key"] = ro["public-key"];
+		if( ro["short-id"] ) o["short-id"] = ro["short-id"];
+		if( ro["spider-x"] ) o["spider-x"] = ro["spider-x"];
+	}
+
+	//wireguard：Clash 用 ip / ipv6 表示本机地址，内部统一叫 local-address
+	if( type(p.type)=="string" && ..string.cmp(p.type,"wireguard")===0 ){
+		if( p.ip && !o["local-address"] ) o["local-address"] = p.ip;
+		elseif( p.ipv6 && !o["local-address"] ) o["local-address"] = p.ipv6;
+	}
+
+	return o;
+};
+
+//把「Clash 代理表数组」转成节点数组（含类型归一化 + validOutbound 归一化）。
+//YAML 配置的 proxies: 段、以及 JSON 配置的 proxies 数组，都走这一个函数。
+clashProxiesToOutbounds = function(list,subscribeUrl){
+	if( type(list)!="table" || !#list ) return null;
+
+	var outbounds = ..table.array();
+	for(i=1;#list;1){
+		var proxy = list[i];
+		if( type(proxy)!="table" ) continue;
+
+		//展开 ws-opts / reality-opts / wireguard 等嵌套字段
+		var outbound = clashFlattenProxy(proxy);
+		if( !outbound.server && !outbound.name && !outbound.type ) continue;
+
+		//Clash 的 type 字段 → 内部 protocol 字段
+		if(outbound.type){
+			if(outbound.type=="ssr"){
+				outbound.network = outbound.protocol;
+				outbound.protocol = "ssr";
+				outbound.networkParam = outbound.protocol_param;
+				outbound.protocol_param = null;
+				outbound.sni = outbound.ot_domain;
+				outbound.path = outbound.ot_path;
+				outbound.tls = outbound.ot_enable ? "tls" : null;
+			}
+			if(outbound.type=="ss"){
+				outbound.type = "shadowsocks";
+				outbound.network = "tcp";
+			}
+			outbound.protocol = outbound.type;
+			outbound.type = null;
+		}
+
+		validOutbound(outbound);
+		if( outbound.address ){
+			outbound.subscribeUrl = subscribeUrl;
+			..table.push(outbounds,outbound);
+		}
+	}
+
+	return #outbounds ? outbounds : null;
+};
+
+//把 Clash 的 proxies: 段（YAML 文本）解析为节点数组。
+//返回 null 表示「这段不是可用的 Clash 节点数据」，调用方应继续尝试其它解析方式。
+//
+// 为什么单独抽出来：importFromString 里 proxy-providers 与 proxies 两段可能同时存在，
+// 需要把两段的结果合并（旧实现会提前 return 丢掉本地节点）。
+clashNodesToOutbounds = function(str,subscribeUrl){
+	return clashProxiesToOutbounds( yamlParse(str,"proxies"), subscribeUrl );
+};
+
+importFromClash = function(str,node){
+	if(node){//如果包含节点
+		//用「缩进感知」的 YAML 子集解析器解析 proxies: 段
+		var list = yamlParse(str,"proxies");
+		if( type(list)!="table" || !#list ) return null;
+
+		var outLines = {};
+		for(i=1;#list;1){
+			var proxy = list[i];
+			if( type(proxy)!="table" ) continue;
+
+			var o = clashFlattenProxy(proxy);
+			if( !o.server && !o.name && !o.type ) continue;
+
+			//输出成「- {json}」行：importFromString 里已有对应的解析分支
+			//（web.json 解析 + validOutbound 归一化），这里只做格式转换。
+			..table.push(outLines,"- " ++ ..web.json.stringify(o));
+		}
+
+		if( !#outLines ) return null;
+		return ..string.join(outLines,'\n');
+	}
+
 
 	else {//包含的是"proxy-providers"
 		var urlmap = ..table.array();

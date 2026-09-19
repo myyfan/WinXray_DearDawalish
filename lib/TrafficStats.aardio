@@ -59,33 +59,32 @@ start = function(){
     //debug.log.print("流量监控1")
 					
 	if(coreType=="xray"){
-		//合并调用：一次 statsquery 用前缀 pattern 同时取回 uplink + downlink（节省约 50% 的进程开销）
-		//并取消原来的 uplink 重试循环（下行已成功则上行失败无需重试）
-		var downTraffic,upTraffic = ..win.invoke(
-			function(corePath,apiPort){
-				import process.popen;
-				import web.json;
+		//【性能】改为纯 gRPC 直连读取统计（xray.app.stats.command.StatsService/GetStats）。
+		//
+		//原来这里是 process.popen(corePath,"api","statsquery",...)：
+		//每次都要「启动一个新的 xray.exe 进程 → 连 API → 读输出 → 退出」，
+		//实测单次 500~610 毫秒；而它被 2 秒一次的流量统计定时器调用
+		//（forms/main/xray.aardio 的 frmXray.trafficStats，apiTime=2000）
+		//→ 界面线程每 2 秒被占住半秒以上，这是主界面卡顿的主要来源。
+		//
+		//gRPC 直连（lib/xray/grpc.aardio，纯 aardio 实现 h2c + gRPC + protobuf）：
+		//实测「建连 + 读下行 + 读上行」共约 12 毫秒，比进程方案快约 50 倍，
+		//也不再需要 win.invoke 额外创建一个界面线程（线程创建本身还要约 40ms）。
+		//
+		//reset 参数与原来的 "-reset" 等价：读取后清零，返回的是「本周期增量」。
+		import xray.grpc;
 
-				var cmdText = '"outbound>>>proxy>>>traffic>>>"';
-				prcsCmd,err = ..process.popen(corePath,' api',' statsquery',' -s',' 127.0.0.1:'+ apiPort,"-pattern",cmdText,"-reset");
+		var client = ..xray.grpc.create("127.0.0.1",apiPort,3000);
 
-				var json = ..web.json.tryParse(prcsCmd.read(-1));
-				var down,up = 0,0;
+		var down = ..xray.grpc.readStat(client,"outbound>>>proxy>>>traffic>>>downlink",true);
+		var up = ..xray.grpc.readStat(client,"outbound>>>proxy>>>traffic>>>uplink",true);
 
-				var stat = json ? json.stat : null;
-				if(stat){
-					for(i=1;#stat;1){
-						var item = stat[i];
-						if(item){
-							if(..string.find(item.name,"downlink")){ down = (tonumber(item.value) : 0) }
-							elseif(..string.find(item.name,"uplink")){ up = (tonumber(item.value) : 0) }
-						}
-					}
-				}
-				return down,up;
-			},corePath,apiPort
-		)
-		return downTraffic,upTraffic;
+		//读取失败（内核未就绪 / API 端口未监听）时返回 0：
+		//调用方用 if(downValue) 判断，0 表示「本周期无增量」，不会误加流量，也不会中断定时器。
+		if(down === null) down = 0;
+		if(up === null) up = 0;
+
+		return down,up;
 	}
 	elseif(coreType=="v2ray"){
 				debug.log.print("流量监控3")

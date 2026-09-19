@@ -1,0 +1,205 @@
+//xray.logPanel - 智能日志面板（批量刷新 + 底部跟随 + 按行裁剪）
+/*
+win.ui.ctrl.edit / richedit 的 log 方法每次输出都执行：
+
+	owner.text = string.concat(owner.text,...)   //全量重写文本
+
+30000 字符的 SetWindowText 实测约 900 毫秒 → 每条日志卡约 1 秒。
+
+本库在控件实例上覆盖 log 与 printf 方法（edit/richedit 的 print、dump，以及
+process.popen.logResponse 最终都调用 owner.log，因此全部自动生效），实现：
+
+1. 批量刷新
+   日志先写入缓冲区，由定时器合并成一次 appendText 写入。
+   实测 1000 条日志约 78 毫秒（原实现约 1000 毫秒/条）。
+
+2. 底部跟随 + 查看历史不打扰（本库的核心）
+   ★ richedit.appendText 会把插入点移到文本尾部，控件「有焦点」时 RichEdit 会
+     为让插入点可见而强制滚动到底部（无焦点时不会滚动 —— 所以只有点过日志框
+     之后才会出现这个现象）。
+     若采用「先追加、再把视图位置改回来」的做法，中间状态会被绘制出来，
+     表现为「来一条消息就先跳到最后、再跳回来」的一跳一跳。
+   ★ 因此本库改用「视图不在底部就完全不碰控件」策略：
+     用户查看历史日志时，新日志只进缓冲区，控件一个字节都不改
+     （既不跳动也不闪烁，且视图位置完全稳定）；用户把视图拉回底部后
+     立即恢复跟随。
+     这同时解决了「拖滚动条到最底却不跟随」：旧实现里追加会让内容持续增长，
+     用户拖到底的瞬间内容又长高了，于是永远追不上底部。
+
+3. 按行裁剪
+   仅在视图位于底部时裁剪，用 EM_LINEINDEX 精确定位行首，保留最近 maxLines 行。
+   richedit 删除为 O(1)（edit 删除同样内容需数秒），因此日志可长期运行不膨胀。
+
+注意：必须在任何日志输出之前调用 attach；控件建议使用 richedit（只读）。
+*/
+namespace xray.logPanel;
+
+/*
+接管日志控件。
+
+@ctrl 日志控件（richedit 或 edit 均可）。
+@maxLines 保留的最大行数，超出后裁剪头部，默认 3000 行。
+@flushInterval 批量刷新间隔（毫秒），默认 40。
+
+返回参数 @ctrl 以便链式调用；参数无效时返回 null。
+*/
+attach = function(ctrl,maxLines,flushInterval){
+	if( !ctrl || !ctrl.hwnd ) return null;
+
+	//避免重复接管
+	if( ctrl.logPanelAttached ) return ctrl;
+	ctrl.logPanelAttached = true;
+
+	maxLines = maxLines : 3000;
+	flushInterval = flushInterval : 40;
+
+	var WM_VSCROLL = 0x0115;
+	var SB_VERT = 1;
+	var SB_BOTTOM = 7;
+	var EM_GETLINECOUNT = 0xBA;
+	var EM_LINEINDEX = 0xBB;
+	var EM_POSFROMCHAR = 0xD6;
+
+	var CHECK_CHARS = 20000;        //每累积这么多字符检查一次行数（摊销 EM_GETLINECOUNT 成本）
+	var MAX_BUFFER_CHARS = 200000;  //查看历史期间最多缓存的字符数
+
+	var hwnd = ctrl.hwnd;
+	var buffer = {};        //待输出缓冲
+	var bufferChars = 0;    //缓冲区字符数
+	var flushTimerId;       //刷新定时器
+	var charSinceCheck = 0; //自上次行数检查后累积的字符数
+	var lineHeightCache = 0;
+
+	//量取一行文本的高度（作为「是否位于底部」的容差）
+	//注意：必须在 `var hwnd` 之后定义（aardio 无变量提升、无前向引用）
+	var getLineHeight = function(){
+		if( lineHeightCache ) return lineHeightCache;
+
+		var idx1 = ::User32.SendMessage(hwnd,EM_LINEINDEX,0,null);
+		var idx2 = ::User32.SendMessage(hwnd,EM_LINEINDEX,1,null);
+		if( idx2 > idx1 ){
+			var p1 = {int x;int y};
+			var p2 = {int x;int y};
+			::User32.SendMessage(hwnd,EM_POSFROMCHAR,p1,idx1);
+			::User32.SendMessage(hwnd,EM_POSFROMCHAR,p2,idx2);
+			var h = p2.y - p1.y;
+			if( h > 4 && h < 200 ){
+				lineHeightCache = h;
+				return h;
+			}
+		}
+		return 16;
+	};
+
+	//是否位于底部（决定「跟随最新日志」还是「不打扰用户查看历史」）
+	var isAtBottom = function(){
+		var si = {uint cbSize=28;uint fMask=0x17;int nMin;int nMax;uint nPage;int nPos;int nTrackPos};
+		::User32.GetScrollInfo(hwnd,SB_VERT,si);
+
+		var maxY = si.nMax - si.nPage;
+		if( maxY <= 0 ) return true;               //内容不足一屏（没有滚动条）
+		if( si.nPos >= maxY ) return true;         //精确到底
+		if( si.nPos < maxY - 64 ) return false;    //明显不在底部（不必量行高）
+		return si.nPos >= maxY - getLineHeight();  //临界区：按一行高度判定
+		
+		//容差取「一行文本高度」的原因：用户把滚动条滑块拖到最底时，松手位置常差
+		//几个像素到不了精确底部（拖拽是按像素比例映射的），容差过小就会被判成
+		//「不在底部」而从此不再跟随。滚轮一格约滚 3 行，远大于一行高度，
+		//所以不会把「用户在看历史」误判成底部。
+	};
+
+	var scrollBottom = function(){
+		::User32.SendMessage(hwnd,WM_VSCROLL,SB_BOTTOM,null);
+	};
+
+	//按行裁剪：用 EM_LINEINDEX 精确定位行首，避免残留半行
+	var trim = function(){
+		charSinceCheck = 0;
+
+		var total = ::User32.SendMessage(hwnd,EM_GETLINECOUNT,null,null);
+		if( total <= maxLines ) return;
+
+		var charPos = ::User32.SendMessage(hwnd,EM_LINEINDEX,total - maxLines,null);
+		if( charPos > 0 ){
+			ctrl.setSel(1,charPos);
+			ctrl.selText = "";
+		}
+	};
+
+	/*
+	★ flush 与 scheduleFlush 互相引用，必须先用 var 前向声明。
+	  aardio 无变量提升：若写成 `var flush = function(){ ... flush() ... }`，
+	  函数体内部的 flush 会被解析为 self.flush（命名空间成员）→ null，
+	  运行时报「不支持此操作:call 名字:'flush' 类型:null」。
+	*/
+	var flush,scheduleFlush;
+
+	scheduleFlush = function(){
+		if( flushTimerId ) return;
+		flushTimerId = ctrl.setTimeout(
+			function(){
+				flushTimerId = null;
+				flush();
+			},flushInterval
+		);
+	};
+
+	//把缓冲区内容一次写入控件
+	flush = function(){
+		if( !#buffer ) return;
+
+		if( !::User32.IsWindow(hwnd) ){ //控件已销毁
+			buffer = {};
+			bufferChars = 0;
+			return;
+		}
+
+		//★ 视图不在底部（用户正在查看历史日志）：只保留在缓冲区，完全不碰控件。
+		//  这样既不会跳动、不会闪烁，也不会与用户的滚动操作互相拉扯。
+		//  等用户把视图拉回底部后，下一次刷新会一次性写入。
+		if( !isAtBottom() ){
+			scheduleFlush();
+			return;
+		}
+
+		var s = ..string.join(buffer);
+		buffer = {};
+		bufferChars = 0;
+
+		ctrl.appendText(s);
+		scrollBottom();
+
+		//容量管理：仅在底部时裁剪，避免打断查看历史日志
+		charSinceCheck += #s;
+		if( charSinceCheck > CHECK_CHARS ){
+			trim();
+			scrollBottom();
+		}
+	};
+
+	//覆盖 log：所有日志输出的统一入口
+	ctrl.log = function(...){
+		var s = ..string.concat(...);
+		..table.push(buffer,s);
+		bufferChars += #s;
+
+		//查看历史期间限制缓冲区大小（超出时丢弃最旧的部分）
+		while( bufferChars > MAX_BUFFER_CHARS && #buffer > 1 ){
+			bufferChars -= #buffer[1];
+			..table.remove(buffer,1);
+		}
+
+		//首条立即写入（保证实时性），随后的日志在间隔内合并成一次写入
+		if( !flushTimerId ){
+			flush();
+			scheduleFlush();
+		}
+	};
+
+	//printf 原本直接 appendText + vScroll（会跳到底部、绕过容量管理），统一走 log
+	ctrl.printf = function(f,...){
+		if(f) ctrl.log( ..string.format(f,...),'\r\n' );
+	};
+
+	return ctrl;
+}

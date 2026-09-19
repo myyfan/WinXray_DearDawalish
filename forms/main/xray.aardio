@@ -15,9 +15,9 @@ btnEditPacOrUwp={cls="plus";text="编辑PAC";left=308;top=361;right=414;bottom=3
 btnImportServerFromClipBd={cls="plus";text="批量导入链接";left=308;top=382;right=441;bottom=399;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF196 ';notify=1;textPadding={left=30};z=8};
 btnTcping={cls="plus";text="检测并连接最快服务器";left=674;top=366;right=868;bottom=398;align="left";bgcolor=0xB0B28F;border={radius=4};db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=18}};iconText='\uF012';notify=1;textPadding={left=42};z=3};
 chkAutoTest={cls="plus";text="异常自动重连 ";left=432;top=387;right=557;bottom=401;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF0C8';notify=1;textPadding={left=30};z=9};
+chkFollowSearch={cls="checkbox";text="跟踪搜索进度";left=547;top=402;right=644;bottom=416;z=12};
 chkJustValid={cls="checkbox";text="仅连接已测通";left=434;top=381;right=527;bottom=395;z=13};
 chkSearchMode={cls="checkbox";text="开启后台搜索";left=548;top=380;right=643;bottom=394;z=11};
-chkFollowSearch={cls="checkbox";text="跟踪搜索进度";left=547;top=402;right=644;bottom=416;z=12};
 edit={cls="richedit";left=7;top=404;right=954;bottom=584;autohscroll=false;bgcolor=0x000000;color=0xFFFFFF;db=1;dl=1;dr=1;edge=1;multiline=1;readonly=1;vscroll=1;z=2};
 listview={cls="vlistview";left=4;top=5;right=954;bottom=358;db=1;dl=1;dr=1;dt=1;edge=1;fullRow=1;gridLines=1;z=1};
 radioProxy={cls="radiobutton";text="全局代理";left=115;top=367;right=194;bottom=397;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);z=4};
@@ -3119,13 +3119,15 @@ if(#config.proxy.outbounds){
 frmXray.startCertPinFetch = function(){
 	if(frmXray.certPinRunning) return;
 
-	// 筛选本次要抓的节点：所有「需要指纹但还没有指纹」的
-	// （抓成功的节点下次不会再进来，所以不会重抓）
+	// ★ 只挑「真的需要指纹」的节点：必须走 TLS（tls 为 "tls" / "xtls"）。
+	// 旧代码漏了这个判断，把「根本没有 TLS」的节点也算进来 ——
+	// 这类节点不会生成 tlsSettings，指纹根本用不上；
+	// 而且它们永远抓不到指纹、会永久卡在待抓列表里，每次启动都白跑一遍。
 	var jobs = ..table.array();
 	for(k,v in ..config.proxy.outbounds){
-		if( v.allowInsecure && !v.pinnedPeerCertSha256 && v.address ){
-			..table.push(jobs,{index=k;address=v.address;port=v.port : 443;sni=v.sni});
-		}
+		if( !v.allowInsecure || v.pinnedPeerCertSha256 || !v.address ) continue;
+		if( !(v.tls === "tls" || v.tls === "xtls") ) continue;
+		..table.push(jobs,{index=k;address=v.address;port=v.port : 443;sni=v.sni});
 	}
 	if(!#jobs) return;
 
@@ -3212,7 +3214,7 @@ frmXray.startCertPinFetch = function(){
 			if(next < 0) next = 0;
 			..config.proxy.certPinProgress = next;//只写 config，不 save（丢失就丢失）
 
-			frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal);
+			frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal + "成功：" + successCount);
 
 			batchPos = frmXray.certPinBatchEnd + 1;
 			if(batchPos > totalJobs){

@@ -361,6 +361,10 @@ mainForm.wndproc = {
 			
 			mainForm.popmenu.add();
 			mainForm.popmenu.add('退出',function(id){ 
+				// 退出前把内存里的 proxy 配置显式写盘。
+				// （fsys.table 虽然会在对象回收时自动保存，但进程被强制结束
+				//   或异常退出时不保险，这里主动存一遍。）
+				config.proxy.save();
 				mainForm.onClose = null;
 				mainForm.close()
 			});

@@ -1088,7 +1088,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 				if(!next){
 					var outer ; 
 					if(!#frmXray.validOutbounds){
-						debug.log.print("运行1");
+					//	debug.log.print("运行1");
 						//初始化手动切换服务器用列表
 						frmXray.validOutbounds = {};
 						var i;						
@@ -1543,7 +1543,7 @@ frmXray.btnTcping.oncommand = function(id,event){
 								}
 							
 						}	
-			frmXray.edit.print("直接连接历史可用服务器  列表号:"+next[1]+"  地址:"+next[2]+"  候选数量:"+#frmXray.validOutbounds);
+			frmXray.edit.print("直接连接历史可用服务器  列表号:"+next[1]+"  地址:"+next[2]+"  候选数量:"+#validAddresses);
 			table.removeByValue(validAddresses,next);
 			switchOutbound(next[1],next[2],true);
 			isOnRestarting = false;
@@ -3096,7 +3096,7 @@ if(true  ){//开始必须为真，要不然第一个测速不通是可能会导�
 }
 // 跟踪搜索进度：配置缺失时默认开启（保持改造前「跟随槽位」的行为）
 if (config.proxy.chkFollowSearch ) frmXray.chkFollowSearch.checked = true;
-else config.proxy.chkFollowSearch = false;
+//else config.proxy.chkFollowSearch = false;
 
 ..searcherTimerID = null; 
 setSearcherTimer = function(){
@@ -3539,6 +3539,32 @@ frmXray.destroySearcherPool = function(){
 	debug.log.print("searcherPool 已销毁");
 };
 
+// === 优雅停止（取消勾选「开启后台搜索」）===
+// 目标：不再派发新节点，但让「已经在测」的任务跑完并把结果写回列表，
+//       等它们全部归还槽位后再释放线程池。
+// 【为什么不能立刻销毁线程池】destroySearcherPool() 会 quit() 掉全部 worker，
+//   在测节点的回调永远不会到达 → 那些行永远停在「后台测试中」、测速结果也白丢。
+frmXray.searcherStopping = false;   // true = 已取消勾选，正在等待在测任务结束
+frmXray.searcherStopTick = 0;
+
+// 结束「停止等待」：此刻在测任务已全部归还槽位，可以安全释放线程池
+frmXray.finishSearcherStop = function(){
+	if(!frmXray.searcherStopping) return;
+	frmXray.searcherStopping = false;
+	frmXray.searcherStopTick = 0;
+	frmXray.searcherBusyCount = 0;
+	frmXray.searcherSlots = {};
+	frmXray.destroySearcherPool();
+};
+
+// 兜底：万一某个 worker 异常卡死、永不归还槽位，30 秒后强制释放
+frmXray.forceFinishSearcherStop = function(){
+	if(!frmXray.searcherStopping) return;
+	debug.log.print("[SD] 停止等待超时，强制释放搜索线程池，剩余在测=",frmXray.searcherBusyCount);
+	frmXray.searcherRoundId = (frmXray.searcherRoundId ? frmXray.searcherRoundId : 0) + 1;  // 丢弃残留回调
+	frmXray.finishSearcherStop();
+};
+
 // 在「安全点」确保线程池存在且尺寸与当前并发数一致。
 // 【铁律】有在测任务时（busyCount>0）绝不销毁重建：
 //   quit() 会终止正在测试的 worker，且其内部 thread.delay 会在界面线程泵消息，
@@ -3602,14 +3628,35 @@ frmXray.resetSearcherRound = function(reason){
 	var rid = frmXray.searcherRoundId;
 	if(!rid) rid = 0;
 
-	frmXray.searcherWatchdogTick = time.tick();    // 先刷新看门狗时间戳，避免 quit() 期间被误触发
-	frmXray.destroySearcherPool();                 // 释放旧池（此时 searchingBackground 仍为 true）
+	frmXray.searcherWatchdogTick = time.tick();
+	// 【重要·请勿改回「销毁线程池」】这里以前会调用 destroySearcherPool()，
+	// 但本函数除了「内核重启 / 改并发数」之外，还会被「热替换出站」路径以
+	// publish("xrayCore.restarted") 触发（见 testOutbound 成功后的分支）——
+	// 那条路径并不重启内核、搜索器入站端口也没有变化。
+	// 结果就是：后台搜索每轮开始时都把 10 个 worker 全部销毁重建，实测日志里
+	// 每 10~30 秒就出现一次「searcherPool 已销毁 + POOL-CREATE」，后果是：
+	//   1) 每个新 worker 都要重新 import 库，而线程内存回收明显滞后
+	//      → 内存只涨不落（实测 190MB 一路涨到 495MB），界面越来越卡；
+	//   2) quit(3000) 会泵消息约 1~3 秒，期间在途回调补位失败
+	//      （日志里的 D-SLOT FAIL 线程池未就绪），并周期性卡顿。
+	// worker 是无状态的（搜索端口随任务参数传入），内核重启后照旧可用；
+	// 只有并发数 / 搜索器端口数真的变了，才由 ensureSearcherPool 做一次性按需重建。
+	// 【关键】区分「内核真重启」与「出站热替换」—— 两者都会走到本函数：
+	//   「热替换出站」路径同样会发布 xrayCore.restarted（见 testOutbound 成功后的分支），
+	//   但它并不会改变搜索器入站端口，在测任务依然有效，绝不能把它们作废；
+	//   否则每 10~30 秒就会有最多 10 行永远停在「后台测试中」，这些节点白白漏测。
+	//   只有端口真的变了（内核真重启）才递增轮次编号、丢弃在途回调（避免误记失败）。
+	var portsChanged = (table.tostring(xray.core.searcherHttpProxyPorts) != frmXray.searcherActivePorts);
+	if(frmXray.searcherBusyCount > 0 && !portsChanged){
+		return;   // 端口未变 → 本轮照常继续跑完，不重置任何簿记
+	}
+
 	frmXray.searcherRoundId = rid + 1;             // 旧一轮的在途回调全部作废
 	frmXray.searcherBusyCount = 0;
 	frmXray.searcherSlots = {};
-	frmXray.searcherPoolSize = 0;                  // 强制下一轮按新并发数重建
-	thread.set("searchingBackground",false);       // 最后解锁：下一次定时器 tick 开始新轮次
-	debug.log.print(tostring(reason),"：已释放搜索线程池，下一轮将按新的并发数重建");
+	frmXray.searcherStopping = false;              // 取消「等待在测任务结束」的停止态
+	thread.set("searchingBackground",false);       // 解锁：下一次定时器 tick 开始新轮次
+//	debug.log.print(tostring(reason),"：已作废在途回调，线程池保留复用");
 };
 
 // 内核重启后，搜索器入站端口全部变化，旧一轮的在途任务全部作废。
@@ -3665,6 +3712,12 @@ frmXray.nextSearchableIndex = function(){
 
 // 向指定槽位派发一个搜索任务；返回 true 表示已成功派发
 frmXray.dispatchSearchTask = function(slot){
+	// 【停止中】已取消勾选「开启后台搜索」：不再派发新节点；
+	// 在测任务继续跑完（其回调会归还槽位，全部归零后才释放线程池）。
+	if(frmXray.searcherStopping){
+		return false;
+	}
+
 	if(!xray.core.prcsxray){ 
 		debug.log.print("[SD] D-SLOT slot=",slot,"FAIL 内核进程为空");  // >>>>> SD
 		return false; 
@@ -3799,6 +3852,14 @@ frmXray.onSearcherSlotFree = function(slot){
 	// 2) 没有可派发的任务：最后一个槽位完成即收尾，允许定时器进入下一轮
 	if(frmXray.searcherBusyCount <= 0){
 		frmXray.searcherBusyCount = 0;
+
+		// 【停止中】在测任务已全部跑完 → 现在才真正释放线程池
+		if(frmXray.searcherStopping){
+			debug.log.print("[SD] STOP-DONE 在测任务已全部完成，释放线程池");
+			frmXray.finishSearcherStop();
+			return;
+		}
+
 		thread.set("searchingBackground",false);
 		debug.log.print("[SD] ROUND-END 解锁 bg=false");  // >>>>> SD
 	}
@@ -3812,6 +3873,17 @@ frmXray.chkSearchMode.oncommand = function(id,event){
 	
 
     if(frmXray.chkSearchMode.checked) {
+        // 【重要】上一轮「取消勾选」若还在等待在测任务结束，此时必须先取消停止、
+        // 复用当前轮次 —— 绝不能在这里开新一轮：那会重置 busyCount / slots，
+        // 让仍在途任务的回调把槽位簿记搞乱（表现为槽位泄漏、后台搜索停摆）。
+        if(frmXray.searcherStopping){
+            frmXray.searcherStopping = false;
+            frmXray.searcherStopTick = 0;
+            frmXray.edit.print("已取消退出搜索模式，继续等待在测任务完成");
+            if(!..searcherTimerID) setSearcherTimer();
+            return;
+        }
+
         if(thread.get("searchingBackground")) {
        //     debug.log.print("chkSearchMode is running.");
             // 看门狗：滚桶式调度依赖每个 worker 归还槽位。若某个 worker 异常卡死导致
@@ -3871,6 +3943,11 @@ frmXray.chkSearchMode.oncommand = function(id,event){
         frmXray.searcherWatchdogTick = time.tick();
         thread.set("searchingBackground",true);
 
+        // 记录本轮使用的搜索器端口：用于在 resetSearcherRound 里区分
+        // 「内核真重启（端口会变 → 在途任务必须作废）」与
+        // 「出站热替换（端口不变 → 在途任务依然有效，必须让它们跑完）」。
+        frmXray.searcherActivePorts = table.tostring(xray.core.searcherHttpProxyPorts);
+
         // 【安全点】递增本轮编号：上一轮（或内核重启前）遗留的回调会被 onSearcherSucces 丢弃，
         // 不会改写本轮的 searcherSlots / searcherBusyCount（这是后台搜索突然停摆的根因之一）。
         frmXray.searcherRoundId = (frmXray.searcherRoundId ? frmXray.searcherRoundId : 0) + 1;
@@ -3922,18 +3999,31 @@ frmXray.chkSearchMode.oncommand = function(id,event){
         ..searcherTimerID = null;
         frmXray.searchingBackground = false;
 
-        // 【重要】必须同时重置线程共享标志与滚桶调度计数：
+        // 【重要】必须重置线程共享标志：
         // oncommand 在创建定时器之前就会检查 thread.get("searchingBackground")，
         // 若这里只改窗体属性而不改线程共享标志，取消勾选后再重新勾选时，
         // 首次 oncommand 会被直接挡回（且在 setSearcherTimer 之前 return），
         // 结果就是「后台搜索再也无法启动」。
         thread.set("searchingBackground",false);
-        frmXray.searcherBusyCount = 0;
-        frmXray.searcherSlots = {};
 
         frmXray.edit.print("退出搜索模式");
-        // 取消勾选后台搜索：销毁线程池，释放线程与内存
-        frmXray.destroySearcherPool();
+
+        // 【不再立刻销毁线程池】改为「停止派发 + 等在测任务跑完」：
+        //   已经在测的节点会继续测完并把结果写回列表（否则那些行会永远停在
+        //   「后台测试中」、测速结果也白丢），只是不再分配新节点。
+        //   在测任务全部归还槽位后，由 onSearcherSlotFree → finishSearcherStop() 释放。
+        //   （注意：此处绝不能把 busyCount / slots 清零，否则就追踪不到在测任务了）
+        frmXray.searcherStopping = true;
+        frmXray.searcherStopTick = time.tick();
+
+        var busyCountNow = frmXray.searcherBusyCount ? frmXray.searcherBusyCount : 0;
+        if(busyCountNow > 0){
+            frmXray.edit.print("等待 " + busyCountNow + " 个在测任务完成后释放搜索线程池 ...");
+            frmXray.setTimeout(frmXray.forceFinishSearcherStop,30000);  // 兜底
+        }
+        else {
+            frmXray.finishSearcherStop();   // 没有在测任务，立即释放
+        }
     }
 }
 /**

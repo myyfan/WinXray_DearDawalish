@@ -2611,46 +2611,59 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			var BATCH_SIZE = 8;	// 每批并发数（同时也在控制内存峰值）
 			var keyPrefix = "subTask_" ++ tostring(..string.crc32(url)) ++ "_" ++ tostring(tBegin) ++ "_";
 
+			// 【为什么改用固定线程池，而不是「每个链接一个 thread.invoke」】
+			//   aardio 中每个新建线程都会把 import 的库在自己的线程环境里重新编译一份，
+			//   实测每创建一个「import + 解析」的线程会额外常驻约 1.3~1.9MB，且回收明显滞后。
+			//   一个订阅源动辄几十上百个二级链接，旧写法（每链接一个线程）会让内存
+			//   一路上涨且订阅结束后也不回落（实测 190MB → 495MB），界面越来越卡。
+			//   改成固定并发线程池后 worker 全程复用，线程数与内存占用都恒定。
+			import thread.works;
+			var workerFn = function(task){
+				import inet.http;
+				import web.rest.github;
+				import xray.outbounds;
+				import debug;
+				import debug.log;
+
+				// 内容已给出（主订阅源）则直接用，否则在线程内抓取。
+				// 线程内只写 debug.log，不做任何界面提示。
+				// 注意：aardio 中空字符串 "" 是真值，必须同时检查长度
+				var text = task.content;
+				if(type(text)!=type.string || !#text){
+					if( string.indexOf(task.url,"github.com")
+						|| string.indexOf(task.url,"raw.githubusercontent.com") ){
+						text = web.rest.github.getContent(task.url);
+					}
+					if(!text){
+						var http = inet.http();
+						http.setTimeouts(8000,15000,15000);
+						text = http.get(task.url);
+					}
+				}
+
+				if(!text){
+					debug.log.print("[任务] 获取失败:",task.url);
+					..thread.set(task.key,"");	// 失败也写一个非 null 值，表示「已完成」
+					return;
+				}
+
+				// 解析
+				var nodes = xray.outbounds.importFromString(text,task.url);
+				..thread.set(task.key, nodes ? nodes : "");
+			};
+
+			var pool = ..thread.works(BATCH_SIZE, workerFn);
+
 			for(start=1;#tasks;BATCH_SIZE){
 				var stop = ..math.min(start + BATCH_SIZE - 1,#tasks);
 
-				// 启动这一批的任务（每个链接一个独立线程）
+				// 启动这一批的任务（推入线程池，worker 全程复用）
 				for(k=start;stop;1){
-					..thread.invoke(
-						function(task,key){
-							import inet.http;
-							import web.rest.github;
-							import xray.outbounds;
-							import debug;
-							import debug.log;
-
-							// 内容已给出（主订阅源）则直接用，否则在线程内抓取。
-							// 线程内只写 debug.log，不做任何界面提示。
-							// 注意：aardio 中空字符串 "" 是真值，必须同时检查长度
-							var text = task.content;
-							if(type(text)!=type.string || !#text){
-								if( string.indexOf(task.url,"github.com")
-									|| string.indexOf(task.url,"raw.githubusercontent.com") ){
-									text = web.rest.github.getContent(task.url);
-								}
-								if(!text){
-									var http = inet.http();
-									http.setTimeouts(8000,15000,15000);
-									text = http.get(task.url);
-								}
-							}
-
-							if(!text){
-								debug.log.print("[任务] 获取失败:",task.url);
-								..thread.set(key,"");	// 失败也写一个非 null 值，表示「已完成」
-								return;
-							}
-
-							// 解析
-							var nodes = xray.outbounds.importFromString(text,task.url);
-							..thread.set(key, nodes ? nodes : "");
-						}, tasks[k], keyPrefix ++ tostring(k)
-					)
+					pool.pushAsync({
+						url = tasks[k].url;
+						content = tasks[k].content;
+						key = keyPrefix ++ tostring(k);
+					});
 				}
 
 				// 收割这一批：谁先完成谁先合并（thread.get 是非阻塞读取）
@@ -2685,6 +2698,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 					pending = stillPending;
 				}
 			}
+
+			pool.quit(3000);	// 释放订阅抓取线程池（worker 全部退出）
 
 			debug.log.print("[" ++ url ++ "] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
 		}

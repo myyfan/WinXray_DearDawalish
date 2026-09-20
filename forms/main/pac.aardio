@@ -575,7 +575,11 @@ winform.onClose = function(hwnd,message,wParam,lParam){
 		winform.btnUpdate.disabled = true;
 		
 		if(!winform.msgAsk("PAC 配置已修改但尚未保存，确定要退出并放弃更改吗？")){
-			return true;
+			winform.btnUpdate.disabled = false;
+			/*返回 false 阻止窗口关闭，保留未保存的修改。
+			aardio 中 onClose 返回 true 不会阻止关闭（win/ui/_.aardio 的 _WM_CLOSE 处理显式排除了 true），
+			必须返回除 null、true 以外的值才会阻止窗口关闭。*/
+			return false;
 		}
 	}
 }

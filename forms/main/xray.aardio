@@ -1518,13 +1518,37 @@ frmXray.btnTcping.oncommand = function(id,event){
 				table.push(validAddresses,{i;ob.address});
 			}
 		}
-		isOnRestarting = false;
+		var next
+					if (#validAddresses) { //如果没有可用服务器，往后使用未测通的
+						//优先找历史最大下载速度节点
+						
+						
+						next = validAddresses[1]
+						if(#validAddresses >1){
+							var j;		
+				
+							//尝试曾成功过的节点
 
-		if(#validAddresses){
-			var firstValid = validAddresses[1];
-			frmXray.edit.print("直接连接历史可用服务器  列表号:"+firstValid[1]+"  地址:"+firstValid[2]+"  候选数量:"+#frmXray.validOutbounds);
-			switchOutbound(firstValid[1],firstValid[2],true);
-		}
+								for( i=2;#validAddresses;1 ){ 
+									j =validAddresses[i];
+									if(config.proxy.outbounds[j[1]].lastValiable) {
+										if(config.proxy.outbounds[next[1]].lastValiable){
+											if(time(config.proxy.outbounds[next[1]].lastValiable)<time(config.proxy.outbounds[j[1]].lastValiable)){
+												next=validAddresses[i];
+											}
+										}
+										else next=validAddresses[i];
+							
+									}
+								}
+							
+						}	
+			frmXray.edit.print("直接连接历史可用服务器  列表号:"+next[1]+"  地址:"+next[2]+"  候选数量:"+#frmXray.validOutbounds);
+			table.removeByValue(validAddresses,next);
+			switchOutbound(next[1],next[2],true);
+			isOnRestarting = false;
+					}
+
 		else{
 			for(i=1;#items;1){
 			var ob = config.proxy.outbounds[i];
@@ -3071,7 +3095,8 @@ if(true  ){//开始必须为真，要不然第一个测速不通是可能会导�
 	//frmXray.chkAutoTest.oncommand();//调用设置异常检测计时器
 }
 // 跟踪搜索进度：配置缺失时默认开启（保持改造前「跟随槽位」的行为）
-frmXray.chkFollowSearch.checked = (config.proxy.chkFollowSearch === null) ? true : config.proxy.chkFollowSearch;
+if (config.proxy.chkFollowSearch ) frmXray.chkFollowSearch.checked = true;
+else config.proxy.chkFollowSearch = false;
 
 ..searcherTimerID = null; 
 setSearcherTimer = function(){
@@ -3214,7 +3239,7 @@ frmXray.startCertPinFetch = function(){
 			if(next < 0) next = 0;
 			..config.proxy.certPinProgress = next;//只写 config，不 save（丢失就丢失）
 
-			frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal + "成功：" + successCount);
+			frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal + "，成功：" + successCount);
 
 			batchPos = frmXray.certPinBatchEnd + 1;
 			if(batchPos > totalJobs){

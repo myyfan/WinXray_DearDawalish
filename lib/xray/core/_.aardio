@@ -128,7 +128,7 @@ restart = function(editor,outbound){
 	searcherSocksProxyPorts = ..table.array();
 	searcherHttpProxyPorts = ..table.array();
 	// >>>>> SD-BEGIN
-	debug.log.print("[SD] PORT-BEGIN batchSize=",batchSize,"slotMax=",slotMax,"baseSocks=",searcherSocksProxyPort,"baseHttp=",searcherHttpProxyPort,"prcsxray=",tostring(prcsxray));
+	//debug.log.print("[SD] PORT-BEGIN batchSize=",batchSize,"slotMax=",slotMax,"baseSocks=",searcherSocksProxyPort,"baseHttp=",searcherHttpProxyPort,"prcsxray=",tostring(prcsxray));
 	// <<<<< SD-END
 	// 【预分配】槽位按上限 slotMax 一次性建好：内核配置里的槽位数与「当前并发数」解耦，
 	// 于是在「高级配置」里调整并发数只需重建线程池，无需重启内核（不会中断当前代理连接）。
@@ -144,7 +144,7 @@ restart = function(editor,outbound){
 		// <<<<< SD-END
 	}
 	// >>>>> SD-BEGIN
-	debug.log.print("[SD] PORT-END socksN=",#searcherSocksProxyPorts,"httpN=",#searcherHttpProxyPorts,"batchSize=",batchSize);
+	//debug.log.print("[SD] PORT-END socksN=",#searcherSocksProxyPorts,"httpN=",#searcherHttpProxyPorts,"batchSize=",batchSize);
 	// <<<<< SD-END
 	searcherSocksProxyPort = searcherSocksProxyPorts[1];
 	searcherHttpProxyPort = searcherHttpProxyPorts[1];

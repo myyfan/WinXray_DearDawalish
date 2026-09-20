@@ -69,25 +69,51 @@ restart = function(){
 		useHttpProxy = useHttpProxy;
 	}
 
-	var pacPort = ..config.proxy.pacPort;
-	if( (! pacPort) || pacPort >= 49152 ){ pacPort = ..wsock.tcp.server.getFreePort("127.0.0.1",10083,10803,10813,44823) }
+	import xray.core;   // 复用统一的端口占用探测（连接探测）
+
+	var listenIp = ..config.core.default.inbounds[[1]][["listen"]] : "127.0.0.1";
+
+	// 期望端口：优先从配置文件读取（未设置、或落在动态端口范围时用默认 10083）
+	var wantPort = tonumber(..config.proxy.pacPort);
+	if( (! wantPort) || wantPort >= 49152 ){ wantPort = 10083 }
 
 	var currentIp,currentPort = $serverMain.getLocalIp(); 
-	if(currentIp!==..config.core.default.inbounds[[1]][["listen"]] 
-		|| currentPort != pacPort ){
-		$serverMain.stop();
-	
-		var ok,err = $serverMain.start(
-			..config.core.default.inbounds[[1]][["listen"]] : "127.0.0.1",pacPort );
-		if(!ok){ 
-			..publish("uiCommand.print","启动PAC服务器失败",err)
-			return false,err;
-		}
-			
-		..publish("uiCommand.print","PAC服务器已启动",getUrl())
-		..publish("pacServer.restarted",pacPort);
+
+	if(currentPort && currentIp === listenIp){
+		// 当前端口就是期望端口 → 无需重启
+		if(currentPort == wantPort){ return true; }
+		
+		// 当前用的是「兜底随机端口」：只要期望端口仍不可用就保持现状（避免反复切换端口）
+		if( ..xray.core.isPortOccupied(wantPort) ){ return true; }
+		// 期望端口已恢复可用 → 继续往下走，切回期望端口
 	}
-	
+
+	// 需要（重新）启动：先停止旧服务释放端口，
+	// 否则下面的端口探测会把「自己正在使用的端口」误判为被外部程序占用。
+	$serverMain.stop();
+
+	// 端口保底：期望端口被占用时，改用系统随机分配的端口。
+	// 【注意】随机端口不写回配置：端口变化后 sysProxy 会自动把新的 PAC 地址
+	//   （含新端口）写入系统代理设置（见 sysProxy 订阅的 "pacServer.restarted"），
+	//   因此无需持久化到 config.proxy.pacPort。
+	var pacPort = wantPort;
+	if( ..xray.core.isPortOccupied(pacPort) ){
+		for(i=1;30;1){
+			var p = ..wsock.tcp.server.getFreePort("127.0.0.1");
+			if(p && !..xray.core.isPortOccupied(p)){ pacPort = p; break; }
+		}
+		..publish("uiCommand.print","PAC 端口 " + wantPort + " 已被占用，本次改用随机端口 " + pacPort);
+	}
+
+	var ok,err = $serverMain.start(listenIp,pacPort);
+	if(!ok){ 
+		..publish("uiCommand.print","启动PAC服务器失败",err)
+		return false,err;
+	}
+		
+	..publish("uiCommand.print","PAC服务器已启动",getUrl())
+	..publish("pacServer.restarted",pacPort);
+
 	return true;
 } 
 

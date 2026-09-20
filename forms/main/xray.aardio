@@ -3452,7 +3452,9 @@ import thread.works;
 frmXray.searcherPool = null;
 frmXray.searcherPoolSize = 0;
 
-// 线程池并发数上限：唯一来源是 xray.core.searcherSlotMax（内核按该值预建全部搜索器槽位）
+// 线程池并发数硬上限。
+// 实际并发数还会受内核「本次已建成的搜索器槽位数」限制（见 getSearcherPoolSize），
+// 槽位数按配置的并发数分档（每 10 个一档，最多 50）—— 见 xray.core.getSearcherSlotCount。
 var SEARCHER_POOL_MAX = tonumber(xray.core.searcherSlotMax) : 50;
 
 // 搜索任务工作函数（定义一次，供线程池复用）
@@ -3492,9 +3494,9 @@ frmXray.searcherWorker = function(taskData) {
 // 计算当前应有的并发数（= 搜索线程池尺寸）
 // 【重要】必须以内核「实际生成的搜索器槽位端口数」为硬上限：
 //   dispatchSearchTask 要求 xray.core.searcherHttpProxyPorts[slot] 存在。
-//   内核按 xray.core.searcherSlotMax 预建了全部槽位，所以正常情况下这个上限不会卡住并发数。
-// 优先读实时配置 config.proxy.searchBatchSize：内核配置里的槽位数已与当前并发数解耦，
-// 因此在「高级配置」里调整并发数后无需重启内核即可立即生效。
+//   槽位数按配置的并发数分档（每 10 个一档，最多 50），故正常情况下不会卡住并发数。
+// 优先读实时配置 config.proxy.searchBatchSize：内核已按分档建好槽位，
+// 因此只要并发数未超出已建的槽位数，调整后无需重启内核即可立即生效。
 var getSearcherPoolSize = function(){
 	var n = tonumber(config.proxy.searchBatchSize);
 	if(!n || n < 1) n = tonumber(xray.core.searchBatchSize);
@@ -3616,8 +3618,9 @@ subscribe("xrayCore.restarted", function(socksProxyPort,httpProxyPort){
 });
 
 // 「高级配置」调整后台搜索并发数。
-// 内核已按 xray.core.searcherSlotMax 预建全部搜索器槽位，因此这里无需重启内核
-// （不会中断当前代理连接），只要重建线程池即可立即生效。
+// 内核按并发数「分档」预建搜索器槽位（见 xray.core.getSearcherSlotCount）：
+//   - 新并发数未超出内核已建的槽位数 → 这里只需重建线程池即可立即生效（不中断代理连接）
+//   - 超出 → 「高级配置」会弹窗询问用户是否立即重启内核（否则下次启动内核时生效）
 subscribe("config.searchBatchSize.changed", function(newBatchSize){
 	var n = tonumber(newBatchSize);
 	if(n && n >= 1){

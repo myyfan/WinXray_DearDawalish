@@ -2536,6 +2536,24 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	}
 	//debug.debug()
 	var count = 0; 
+	// ==================================================================
+	// 【跨源去重 + 预填充】seenKeys 必须放在订阅源循环之外：
+	//   1) 放在循环内 → 每个订阅源各建一份索引，源与源之间完全不去重，
+	//      同一个节点会被反复导入（实测一次更新解析出 2 万+ 个，其中 9914 个是重复的）。
+	//   2) 预填充库里已有的节点 → 重复节点在 addNodes 里就被直接丢弃，
+	//      连 impOutbounds 数组都进不去，避免「先全部导入 → 再全部删除」的双倍内存峰值。
+	//   3) 语义与 removeRepeat 的「保留序号在前的」完全一致：库里已有的节点会胜出。
+	//   注意 outbounds 是稀疏表，# 不能保证覆盖全部元素，这里用 for-in 全量遍历。
+	// ==================================================================
+	var seenKeys = {};	// 去重索引：address:port → true（整个更新过程共享，跨源跨批次）
+	var prefillCount = 0;
+	for(k,ob in cfgOutbounds){
+		if(type(ob)!=type.table) continue;
+		seenKeys[ tostring(ob.address) ++ ":" ++ tostring(ob.port) ] = true;
+		prefillCount++;
+	}
+	..debug.log.print("[去重] 预填充库中已有节点",prefillCount,"个（这些节点本次将被直接跳过）");
+	
 	for(url,data in outbondSubscribeUrlMap){
 		// 每个订阅源开始处理时显示进度提示框，整个处理过程结束后关闭（原设计的交互）
 		var progressForm = openSubscribeProgressDlg(url);
@@ -2552,7 +2570,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		//    而且天然支持增量 —— seenKeys 跨批次保留，新批次只检查新增节点。
 		// ==================================================================
 		var impOutbounds = ..table.array();
-		var seenKeys = {};	// 去重索引：address:port → true（跨批次保留）
+		// 注意：seenKeys 定义在订阅源循环之外（已预填充库中已有节点），此处不要再新建
 
 		// 把一批节点并入结果集（逐节点去重，重复的直接丢弃，绝不进入数组占内存）
 		var addNodes = function(nodes){

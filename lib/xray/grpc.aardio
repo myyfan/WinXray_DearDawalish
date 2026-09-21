@@ -332,7 +332,12 @@ var ACCOUNT_TYPE = {
 //传输名 -> {protobuf 名, 传输类型名}
 var TRANSPORT = {
 	tcp         = { name="tcp";        proto=null };
-	raw         = { name="raw";        proto=null };
+	//【修正 2026-09-21】proto 层的传输名里没有 "raw"。
+	//  "raw" 是 Xray 26.x 在 JSON 配置层的别名（等价于 tcp），
+	//  但 TransportConfig.protocol_name 传 "raw" 会被内核直接拒绝整条 AddOutbound
+	//  （表现为 gRPC trailers-only →「gRPC 添加出站失败」；实测用户日志里 157 次搜索失败全因此）。
+	//  必须映射为内核认识的 "tcp"。
+	raw         = { name="tcp";        proto=null };
 	ws          = { name="websocket";  proto="xray.transport.internet.websocket.Config" };
 	websocket   = { name="websocket";  proto="xray.transport.internet.websocket.Config" };
 	grpc        = { name="grpc";       proto="xray.transport.internet.grpc.encoding.Config" };

@@ -259,6 +259,7 @@ winform.btnUpdate.oncommand = function(id,event){
 	//console.dump(outbondSubscribeUrlMap);
 //	import xray
 	var count = xray.outbounds.updateSubscription(outbondSubscribeUrlMap);
+/*
 	if(!count){
 		//winform.btnUpdate.disabledText = null;
 		
@@ -267,6 +268,7 @@ winform.btnUpdate.oncommand = function(id,event){
 	elseif(count >1000){
 		..frmXray.removeRepeat();
 	}
+*/
 	
 	
 	//publish("uiCommand.restartxrayCore");//刷新视图，重新开始测速

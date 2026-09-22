@@ -329,6 +329,22 @@ hasSockopt = function(so){
 		|| so.windowClamp || so.userLevel) ? true : false;
 };
 
+// 26.x 迁移：ws 的 Host 从 headers.Host 改为独立 host 字段。
+// 依据：Xray 26 起 headers.Host 已弃用（启动会打 Warning，未来将移除）；
+//      实测 26.9.9 用独立 host 生效、1.8.4 会忽略该字段（本项目已统一使用 26.x 内核）。
+// 同时清理节点自带的 ws-opts.headers.Host（订阅保真解析会保留它，同样触发弃用警告）。
+migrateWsHost = function(ws, host){
+	if(type(ws)!="table") return ws;
+	var h = ws.headers;
+	if(type(h)=="table" && h.Host){
+		if(!ws.host) ws.host = h.Host;
+		h.Host = null;
+		if(!..table.count(h)) ws.headers = null;
+	}
+	if(!ws.host && host) ws.host = host;
+	return ws;
+};
+
 // 统一增强出站：传输迁移 / REALITY / uTLS 指纹 / 嵌套字段回退
 // 注意：保持节点原始结构不变，仅在读取时兼容（ws-opts 等嵌套字段）
 applyStreamSettings = function(ob,outbound){
@@ -367,7 +383,7 @@ applyStreamSettings = function(ob,outbound){
 		}
 		if((!ws.path) && outbound.path) ws.path = outbound.path;
 		if(!ws.path) ws.path = "/";
-		if((!ws.headers) && host) ws.headers = {Host=host};
+		migrateWsHost(ws, host);
 		ss.wsSettings = ws;
 	}
 	elseif(net == "grpc"){
@@ -581,12 +597,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 				headers = outbound.headers;
 			}
 			
-			if( outbound.host ) {
-				if(!ob.streamSettings.wsSettings.headers){
-					ob.streamSettings.wsSettings.headers = {}
-				}
-				ob.streamSettings.wsSettings.headers.Host = outbound.host;
-			}
+			migrateWsHost(ob.streamSettings.wsSettings, outbound.host);
 		}
 		elseif( (outbound.network == "http") || (outbound.network == "h2")  ){
 			var host = outbound.host;
@@ -705,12 +716,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 				headers = outbound.headers;
 			}
 			
-			if( outbound.host ) {
-				if(!ob.streamSettings.wsSettings.headers){
-					ob.streamSettings.wsSettings.headers = {}
-				}
-				ob.streamSettings.wsSettings.headers.Host = outbound.host;
-			}
+			migrateWsHost(ob.streamSettings.wsSettings, outbound.host);
 		}
 		elseif( (outbound.network == "http") || (outbound.network == "h2")  ){
 			var host = outbound.host;
@@ -824,12 +830,7 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 				headers = outbound.headers;
 			}
 			
-			if( outbound.host ) {
-				if(!ob.streamSettings.wsSettings.headers){
-					ob.streamSettings.wsSettings.headers = {}
-				}
-				ob.streamSettings.wsSettings.headers.Host = outbound.host;
-			}
+			migrateWsHost(ob.streamSettings.wsSettings, outbound.host);
 		}
 		applyStreamSettings(ob,outbound);
 		..table.assign(proxyOutboundInCore,ob); 
@@ -1250,12 +1251,7 @@ writeSearcherOutboundConfig  = function(jsonPath,outbound,proxyTag){
 				headers = outbound.headers;
 			}
 			
-			if( outbound.host ) {
-				if(!ob.streamSettings.wsSettings.headers){
-					ob.streamSettings.wsSettings.headers = {}
-				}
-				ob.streamSettings.wsSettings.headers.Host = outbound.host;
-			}
+			migrateWsHost(ob.streamSettings.wsSettings, outbound.host);
 		}
 		elseif( (outbound.network == "http") || (outbound.network == "h2")  ){
 			var host = outbound.host;
@@ -1380,12 +1376,7 @@ security=#outbound.tls ? outbound.tls : null;
 				headers = outbound.headers;
 			}
 			
-			if( outbound.host ) {
-				if(!ob.streamSettings.wsSettings.headers){
-					ob.streamSettings.wsSettings.headers = {}
-				}
-				ob.streamSettings.wsSettings.headers.Host = outbound.host;
-			}
+			migrateWsHost(ob.streamSettings.wsSettings, outbound.host);
 		}
 		elseif( (outbound.network == "http") || (outbound.network == "h2")  ){
 			var host = outbound.host;
@@ -1499,12 +1490,7 @@ security=#outbound.tls ? outbound.tls : null;
 				headers = outbound.headers;
 			}
 			
-			if( outbound.host ) {
-				if(!ob.streamSettings.wsSettings.headers){
-					ob.streamSettings.wsSettings.headers = {}
-				}
-				ob.streamSettings.wsSettings.headers.Host = outbound.host;
-			}
+			migrateWsHost(ob.streamSettings.wsSettings, outbound.host);
 		}
 		applyStreamSettings(ob,outbound);
 		..table.assign(proxyOutboundInCore,ob); 

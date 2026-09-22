@@ -2908,6 +2908,30 @@ var accelerator = win.ui.accelerator({
 		}
 	};
 },frmXray);
+
+//【修复】焦点在文本编辑控件上时，把快捷键交还给控件本身。
+//否则 Ctrl+C / Ctrl+A / Ctrl+V 会被上面的快捷键表统一拦截——
+//在日志窗口里按 Ctrl+C 会去复制节点，并弹「没有选中节点！」。
+var isTextEditFocus = function(hwndOwner){
+	var hFocus = ::User32.GetFocus();
+	if( !hFocus ) return false;
+	if( hwndOwner && hFocus != hwndOwner && !::User32.IsChild(hwndOwner,hFocus) ) return false;
+
+	var buf = raw.buffer(128);
+	var n = ::User32.GetClassNameW(hFocus,buf,64);
+	if( n <= 0 ) return false;
+
+	//RICHEDIT50W / RichEdit20W / Edit（含 combobox 内部 edit）
+	var cls = string.fromto(string.left(raw.tostring(buf),n*2),1200,65001);
+	return string.cmp(string.left(cls,8),"RichEdit")===0 || string.cmp(string.left(cls,4),"Edit")===0;
+};
+
+var accelPreTranslate = frmXray.preTranslateAccelerator;
+frmXray.preTranslateAccelerator = function(msg){
+	if( isTextEditFocus(frmXray.hwnd) ) return; //返回假值 = 不拦截，按键走控件原生处理
+	return accelPreTranslate(msg);
+};
+
 //文件拖放
 frmXray.onDropFiles = function(files){
 	for(i=1;#files;1){

@@ -4,6 +4,22 @@ import  debug.log
 import console
 
 import config
+
+/*
+大配置表「分块保存」。
+fsys.table 原生的 save 是一次性 table.tostring 整张表，
+实测 11640 个节点 / 5.4MB 的 proxy.table 要 5.8 秒 —— 这期间界面完全不泵消息（硬卡）。
+订阅更新末尾会连存两次，另外还有个每 5 分钟保存一次的定时器，都会卡。
+
+装上后改为「按节点分块序列化 + 每块之间泵一次消息」，
+但泵消息时会【丢弃 WM_TIMER】—— 这样界面照常重绘与响应，
+而绝不会有 aardio 定时器回调重入到序列化中途（那会导致偶发崩溃）。
+
+路径必须与 fsys.config 内部构造 fsys.table 时用的完全一致（config.proxy 对应 <_cfgDir>/proxy.table）。
+*/
+import xray.saveAsync;
+xray.saveAsync.install(config.proxy, io.joinpath(config._cfgDir, "proxy.table"));
+
 var dbg = debug.hook();
 //debug.log.setPath("/config/dbg$.log");
 //..fsys.delete("/config/dbg$.log");

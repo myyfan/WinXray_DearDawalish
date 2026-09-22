@@ -1,4 +1,4 @@
-//xray.logPanel - 智能日志面板（批量刷新 + 底部跟随 + 按行裁剪）
+//xray.logPanel - 智能日志面板（批量刷新 + 底部跟随 + 查看历史不打扰 + 按行裁剪）
 /*
 win.ui.ctrl.edit / richedit 的 log 方法每次输出都执行：
 
@@ -13,22 +13,32 @@ process.popen.logResponse 最终都调用 owner.log，因此全部自动生效�
    日志先写入缓冲区，由定时器合并成一次 appendText 写入。
    实测 1000 条日志约 78 毫秒（原实现约 1000 毫秒/条）。
 
-2. 底部跟随 + 查看历史不打扰（本库的核心）
-   ★ richedit.appendText 会把插入点移到文本尾部，控件「有焦点」时 RichEdit 会
-     为让插入点可见而强制滚动到底部（无焦点时不会滚动 —— 所以只有点过日志框
-     之后才会出现这个现象）。
-     若采用「先追加、再把视图位置改回来」的做法，中间状态会被绘制出来，
-     表现为「来一条消息就先跳到最后、再跳回来」的一跳一跳。
-   ★ 因此本库改用「视图不在底部就完全不碰控件」策略：
-     用户查看历史日志时，新日志只进缓冲区，控件一个字节都不改
-     （既不跳动也不闪烁，且视图位置完全稳定）；用户把视图拉回底部后
-     立即恢复跟随。
-     这同时解决了「拖滚动条到最底却不跟随」：旧实现里追加会让内容持续增长，
-     用户拖到底的瞬间内容又长高了，于是永远追不上底部。
+2. 底部跟随 / 查看历史不打扰（本库的核心）
+
+   视图在底部时：按 flushInterval（默认 40 毫秒）合并写入，并 scrollBottom() 跟随最新日志。
+
+   视图不在底部时（用户正在翻阅历史日志）：
+   新日志只进缓冲区，改按 historyFlushInterval（默认 5000 毫秒）批量追加到末尾。
+   追加之前用 EM_GETSCROLLPOS 记下滚动位置，追加之后用 EM_SETSCROLLPOS 精确还原。
+
+   ★ 为什么「追加后还原同一个滚动位置」就能停在原地：
+     追加只发生在文档末尾，已有内容的文档坐标完全不变，
+     因此还原同一个滚动位置 = 还原到同一段内容（实测字符索引逐字节一致）。
+
+   ★ 为什么不能「追加时完全不动控件、等用户回到底部再一次性倒出」：
+     那样用户滚到底部的瞬间，之前积压的大量日志会一次性灌入并跳到最新，
+     用户想接着往下看的那一行会被冲走，再也找不回来。
+     按长间隔持续追加则每次只增加一小段，用户的视线位置由还原机制牢牢钉住。
+
+   用户按住鼠标左键（拖滚动条 / 选择文本）时跳过本次追加，避免与用户操作打架。
+
+   追加期间用 WM_SETREDRAW 关闭重绘，追加与还原之间不会出现「先跳到底再跳回来」的中间态闪烁。
 
 3. 按行裁剪
-   仅在视图位于底部时裁剪，用 EM_LINEINDEX 精确定位行首，保留最近 maxLines 行。
-   richedit 删除为 O(1)（edit 删除同样内容需数秒），因此日志可长期运行不膨胀。
+   视图位于底部时正常裁剪（用 EM_LINEINDEX 精确定位行首，保留最近 maxLines 行）。
+   查看历史期间不裁剪（裁剪会整体上移、破坏用户视线位置），
+   仅当行数超过 FORCE_TRIM_LINES（50000 行）时才强制裁剪一次，
+   此时先记录视图顶部字符索引，裁剪后用「字符索引 → 行号 → 相对滚动」把视线拉回原处。
 
 注意：必须在任何日志输出之前调用 attach；控件建议使用 richedit（只读）。
 */
@@ -39,11 +49,12 @@ namespace xray.logPanel;
 
 @ctrl 日志控件（richedit 或 edit 均可）。
 @maxLines 保留的最大行数，超出后裁剪头部，默认 3000 行。
-@flushInterval 批量刷新间隔（毫秒），默认 40。
+@flushInterval 视图在底部时的批量刷新间隔（毫秒），默认 40。
+@historyFlushInterval 查看历史期间的批量追加间隔（毫秒），默认 5000。
 
 返回参数 @ctrl 以便链式调用；参数无效时返回 null。
 */
-attach = function(ctrl,maxLines,flushInterval){
+attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 	if( !ctrl || !ctrl.hwnd ) return null;
 
 	//避免重复接管
@@ -52,23 +63,37 @@ attach = function(ctrl,maxLines,flushInterval){
 
 	maxLines = maxLines : 3000;
 	flushInterval = flushInterval : 40;
+	historyFlushInterval = historyFlushInterval : 5000;
 
 	var WM_VSCROLL = 0x0115;
+	var WM_SETREDRAW = 0x000B;
 	var SB_VERT = 1;
 	var SB_BOTTOM = 7;
 	var EM_GETLINECOUNT = 0xBA;
 	var EM_LINEINDEX = 0xBB;
+	var EM_LINEFROMCHAR = 0xC9;
+	var EM_GETFIRSTVISIBLELINE = 0xCE;
 	var EM_POSFROMCHAR = 0xD6;
+	var EM_CHARFROMPOS = 0xD7;
+	var EM_GETSCROLLPOS = 0x4DD;
+	var EM_SETSCROLLPOS = 0x4DE;
+	var VK_LBUTTON = 0x01;
 
 	var CHECK_CHARS = 20000;        //每累积这么多字符检查一次行数（摊销 EM_GETLINECOUNT 成本）
 	var MAX_BUFFER_CHARS = 200000;  //查看历史期间最多缓存的字符数
+	var FORCE_TRIM_LINES = 50000;   //查看历史期间强制裁剪的行数上限
 
 	var hwnd = ctrl.hwnd;
 	var buffer = {};        //待输出缓冲
 	var bufferChars = 0;    //缓冲区字符数
 	var flushTimerId;       //刷新定时器
+	var flushTimerIsHistory = false; //当前排定的定时器是否为「查看历史」的长间隔定时器
 	var charSinceCheck = 0; //自上次行数检查后累积的字符数
 	var lineHeightCache = 0;
+
+	var isWindowAlive = function(){
+		return ::User32.IsWindow(hwnd) != 0;
+	};
 
 	//量取一行文本的高度（作为「是否位于底部」的容差）
 	//注意：必须在 `var hwnd` 之后定义（aardio 无变量提升、无前向引用）
@@ -101,7 +126,7 @@ attach = function(ctrl,maxLines,flushInterval){
 		if( si.nPos >= maxY ) return true;         //精确到底
 		if( si.nPos < maxY - 64 ) return false;    //明显不在底部（不必量行高）
 		return si.nPos >= maxY - getLineHeight();  //临界区：按一行高度判定
-		
+
 		//容差取「一行文本高度」的原因：用户把滚动条滑块拖到最底时，松手位置常差
 		//几个像素到不了精确底部（拖拽是按像素比例映射的），容差过小就会被判成
 		//「不在底部」而从此不再跟随。滚轮一格约滚 3 行，远大于一行高度，
@@ -112,18 +137,54 @@ attach = function(ctrl,maxLines,flushInterval){
 		::User32.SendMessage(hwnd,WM_VSCROLL,SB_BOTTOM,null);
 	};
 
-	//按行裁剪：用 EM_LINEINDEX 精确定位行首，避免残留半行
-	var trim = function(){
+	//取视图顶部的字符索引（用于裁剪后的位置锚定；失败返回 -1）
+	var getTopCharIndex = function(){
+		var pt = {int x=0;int y=0};
+		var idx = ::User32.SendMessage(hwnd,EM_CHARFROMPOS,0,pt) & 0xFFFF;
+		if( idx === 0xFFFF ) return -1;
+		return idx;
+	};
+
+	//重绘整个控件（含滚动条等非客户区），用于解除 WM_SETREDRAW 后立即刷新
+	var redraw = function(){
+		::User32.SendMessage(hwnd,WM_SETREDRAW,1,null);
+		::User32.InvalidateRect(hwnd,null,1);
+		::User32.UpdateWindow(hwnd);
+	};
+
+	/*
+	按行裁剪：用 EM_LINEINDEX 精确定位行首，避免残留半行。
+
+	参数 @keepPosition 为真时（查看历史期间），先记录视图顶部字符索引，
+	裁剪后用「字符索引 → 行号 → EM_LINESCROLL 相对滚动」把视线拉回原处。
+	*/
+	var trim = function(keepPosition){
 		charSinceCheck = 0;
 
 		var total = ::User32.SendMessage(hwnd,EM_GETLINECOUNT,null,null);
 		if( total <= maxLines ) return;
 
 		var charPos = ::User32.SendMessage(hwnd,EM_LINEINDEX,total - maxLines,null);
-		if( charPos > 0 ){
-			ctrl.setSel(1,charPos);
-			ctrl.selText = "";
+		if( charPos <= 0 ) return;
+
+		var topIdx = -1;
+		if( keepPosition ) topIdx = getTopCharIndex();
+
+		//裁剪用 setSel 会滚动到插入点，期间关重绘避免中间态闪烁
+		::User32.SendMessage(hwnd,WM_SETREDRAW,0,null);
+
+		ctrl.setSel(1,charPos);
+		ctrl.selText = "";
+
+		if( keepPosition && topIdx > charPos ){
+			//被删除的内容全部位于视图上方，因此原来看的那个字符索引前移了 charPos
+			var newIdx = topIdx - charPos;
+			var newLine = ::User32.SendMessage(hwnd,EM_LINEFROMCHAR,newIdx,null);
+			var curLine = ::User32.SendMessage(hwnd,EM_GETFIRSTVISIBLELINE,null,null);
+			::User32.SendMessage(hwnd,EM_LINESCROLL,0,newLine - curLine);
 		}
+
+		redraw();
 	};
 
 	/*
@@ -132,33 +193,39 @@ attach = function(ctrl,maxLines,flushInterval){
 	  函数体内部的 flush 会被解析为 self.flush（命名空间成员）→ null，
 	  运行时报「不支持此操作:call 名字:'flush' 类型:null」。
 	*/
-	var flush,scheduleFlush;
+	var flush,scheduleFlush,flushHistory;
 
-	scheduleFlush = function(){
+	scheduleFlush = function(isHistory){
 		if( flushTimerId ) return;
+		flushTimerIsHistory = isHistory;
 		flushTimerId = ctrl.setTimeout(
 			function(){
 				flushTimerId = null;
-				flush();
-			},flushInterval
+				var wasHistory = flushTimerIsHistory;
+				flushTimerIsHistory = false;
+				if( wasHistory ){
+					flushHistory();
+				}
+				else{
+					flush();
+				}
+			},isHistory ? historyFlushInterval : flushInterval
 		);
 	};
 
-	//把缓冲区内容一次写入控件
+	//视图在底部：正常追加并跟随
 	flush = function(){
 		if( !#buffer ) return;
 
-		if( !::User32.IsWindow(hwnd) ){ //控件已销毁
+		if( !isWindowAlive() ){ //控件已销毁
 			buffer = {};
 			bufferChars = 0;
 			return;
 		}
 
-		//★ 视图不在底部（用户正在查看历史日志）：只保留在缓冲区，完全不碰控件。
-		//  这样既不会跳动、不会闪烁，也不会与用户的滚动操作互相拉扯。
-		//  等用户把视图拉回底部后，下一次刷新会一次性写入。
+		//★ 视图不在底部（用户正在查看历史日志）→ 转入长间隔批量追加模式
 		if( !isAtBottom() ){
-			scheduleFlush();
+			scheduleFlush(true);
 			return;
 		}
 
@@ -172,8 +239,61 @@ attach = function(ctrl,maxLines,flushInterval){
 		//容量管理：仅在底部时裁剪，避免打断查看历史日志
 		charSinceCheck += #s;
 		if( charSinceCheck > CHECK_CHARS ){
-			trim();
+			trim(false);
 			scrollBottom();
+		}
+	};
+
+	//视图不在底部：批量追加到末尾，然后精确还原用户正在查看的位置
+	flushHistory = function(){
+		if( !#buffer ) return;
+
+		if( !isWindowAlive() ){
+			buffer = {};
+			bufferChars = 0;
+			return;
+		}
+
+		//用户已经回到底部 → 立即恢复实时跟随
+		if( isAtBottom() ){
+			flush();
+			return;
+		}
+
+		//用户正按住鼠标左键（拖滚动条或选择文本）→ 本次跳过，稍后再来
+		if( ::User32.GetAsyncKeyState(VK_LBUTTON) & 0x8000 ){
+			scheduleFlush(true);
+			return;
+		}
+
+		//追加前记录滚动位置
+		var sp = {int x;int y};
+		::User32.SendMessage(hwnd,EM_GETSCROLLPOS,0,sp);
+
+		var s = ..string.join(buffer);
+		buffer = {};
+		bufferChars = 0;
+
+		//★ 关重绘：追加会让 richedit 把视图甩到文本尾部（此时还原动作尚未执行），
+		//  开着重绘就会看到「先跳到底、再跳回来」的闪烁。
+		::User32.SendMessage(hwnd,WM_SETREDRAW,0,null);
+
+		ctrl.appendText(s);
+
+		//★ 追加只发生在文档末尾，前面内容的文档坐标不变，
+		//  因此把滚动位置设回原值 = 停在用户原来正在看的那一段内容。
+		var restored = ::User32.SendMessage(hwnd,EM_SETSCROLLPOS,0,sp);
+
+		redraw();
+
+		if( !restored ) scrollBottom(); //极端情况下还原失败，退化为跟随最新
+
+		//容量管理：查看历史期间一般不裁剪（会破坏视线位置），仅在行数极端时兜底
+		charSinceCheck += #s;
+		if( charSinceCheck > CHECK_CHARS ){
+			charSinceCheck = 0;
+			var total = ::User32.SendMessage(hwnd,EM_GETLINECOUNT,null,null);
+			if( total > FORCE_TRIM_LINES ) trim(true);
 		}
 	};
 
@@ -189,10 +309,21 @@ attach = function(ctrl,maxLines,flushInterval){
 			..table.remove(buffer,1);
 		}
 
-		//首条立即写入（保证实时性），随后的日志在间隔内合并成一次写入
 		if( !flushTimerId ){
+			//首条立即写入（底部时保证实时性；查看历史时会自动转入长间隔模式）
 			flush();
-			scheduleFlush();
+			scheduleFlush(false);
+		}
+		elseif( flushTimerIsHistory ){
+			//★ 正在等待长间隔：若用户此刻已把视图拉回底部，取消等待、立即恢复跟随
+			if( isWindowAlive() && isAtBottom() ){
+				//richedit 控件没有 clearTimeout，但 clearInterval 与 setTimeout 共用同一套定时器 id
+				ctrl.clearInterval(flushTimerId);
+				flushTimerId = null;
+				flushTimerIsHistory = false;
+				flush();
+				scheduleFlush(false);
+			}
 		}
 	};
 

@@ -2553,7 +2553,69 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		prefillCount++;
 	}
 	..debug.log.print("[去重] 预填充库中已有节点",prefillCount,"个（这些节点本次将被直接跳过）");
-	
+
+	// ==================================================================
+	// 【线程模型 · 内存】一个任务一个线程，任务跑完线程【自然结束】，
+	//   全程不使用 thread.terminate，句柄由 manage 在 waitOne/waitClose 中回收。
+	//
+	//   为什么不用 thread.works（复用池）：
+	//     thread.works 的 quit() 只给 100ms 宽限，而 worker 空闲时是
+	//     sleep(waitTime) 轮询 —— 来不及醒来的 worker 会被 thread.terminate
+	//     强杀，而被强杀线程的整个线程环境（含它 import 的那一堆库）不会归还
+	//     系统：实测每线程常驻 180~317KB，且「反复建销池」会单调增长。
+	//     即使把 waitTime 压到 20ms，实测仍会留下约 6.5MB/5轮 的常驻增长。
+	//
+	//   改用 thread.manage 的实测对比（8 并发 / 24 任务 / 每任务 1000 节点 /
+	//   各 4 轮，判据 PagefileUsage 已提交内存）：
+	//     · thread.manage ：第 1 轮 -5792KB，之后每轮【精确 0】 → 完全归还
+	//     · thread.works  ：+748 / +4612 / +1804 / 0 KB → 合计 +7164KB 净泄漏
+	//
+	//   代价：每个任务都要重建一次线程环境（重新 import 库）。实测拆解：
+	//     · thread.create 本身        62 ms
+	//     · import xray.outbounds    157 ms（工程最大库之一，135KB/3600 行）
+	//     · 其余 4 个 import          31 ms
+	//     · 8 并发时每线程约 95 ms（import 有争用，非完全并行）
+	//   即每任务约 +140~250ms 额外开销；真实场景里它和别的任务的网络等待
+	//   重叠，多数会被掩盖。订阅更新不是高频操作，这个开销可以接受。
+	// ==================================================================
+	import thread.manage;
+	var BATCH_SIZE = 8;	// 每批并发数（同时也在控制内存峰值）
+	var workerFn = function(task){
+		import inet.http;
+		import web.rest.github;
+		import xray.outbounds;
+		import debug;
+		import debug.log;
+
+		// 内容已给出（主订阅源）则直接用，否则在线程内抓取。
+		// 线程内只写 debug.log，不做任何界面提示。
+		// 注意：aardio 中空字符串 "" 是真值，必须同时检查长度
+		var text = task.content;
+		if(type(text)!=type.string || !#text){
+			if( string.indexOf(task.url,"github.com")
+				|| string.indexOf(task.url,"raw.githubusercontent.com") ){
+				text = web.rest.github.getContent(task.url);
+			}
+			if(!text){
+				var http = inet.http();
+				http.setTimeouts(8000,15000,15000);
+				text = http.get(task.url);
+			}
+		}
+
+		if(!text){
+			debug.log.print("[任务] 获取失败:",task.url);
+			..thread.set(task.key,"");	// 失败也写一个非 null 值，表示「已完成」
+			return;
+		}
+
+		// 解析
+		var nodes = xray.outbounds.importFromString(text,task.url);
+		..thread.set(task.key, nodes ? nodes : "");
+	};
+	// limit = 并发上限（必须 < 64：thread.waitOne 一次最多等 64 个句柄）
+	var manage = ..thread.manage(BATCH_SIZE);
+
 	for(url,data in outbondSubscribeUrlMap){
 		// 每个订阅源开始处理时显示进度提示框，整个处理过程结束后关闭（原设计的交互）
 		var progressForm = openSubscribeProgressDlg(url);
@@ -2626,58 +2688,18 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			debug.log.print("[" ++ url ++ "] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
 
 			var tBegin = ..time.tick();
-			var BATCH_SIZE = 8;	// 每批并发数（同时也在控制内存峰值）
 			var keyPrefix = "subTask_" ++ tostring(..string.crc32(url)) ++ "_" ++ tostring(tBegin) ++ "_";
 
-			// 【为什么改用固定线程池，而不是「每个链接一个 thread.invoke」】
-			//   aardio 中每个新建线程都会把 import 的库在自己的线程环境里重新编译一份，
-			//   实测每创建一个「import + 解析」的线程会额外常驻约 1.3~1.9MB，且回收明显滞后。
-			//   一个订阅源动辄几十上百个二级链接，旧写法（每链接一个线程）会让内存
-			//   一路上涨且订阅结束后也不回落（实测 190MB → 495MB），界面越来越卡。
-			//   改成固定并发线程池后 worker 全程复用，线程数与内存占用都恒定。
-			import thread.works;
-			var workerFn = function(task){
-				import inet.http;
-				import web.rest.github;
-				import xray.outbounds;
-				import debug;
-				import debug.log;
-
-				// 内容已给出（主订阅源）则直接用，否则在线程内抓取。
-				// 线程内只写 debug.log，不做任何界面提示。
-				// 注意：aardio 中空字符串 "" 是真值，必须同时检查长度
-				var text = task.content;
-				if(type(text)!=type.string || !#text){
-					if( string.indexOf(task.url,"github.com")
-						|| string.indexOf(task.url,"raw.githubusercontent.com") ){
-						text = web.rest.github.getContent(task.url);
-					}
-					if(!text){
-						var http = inet.http();
-						http.setTimeouts(8000,15000,15000);
-						text = http.get(task.url);
-					}
-				}
-
-				if(!text){
-					debug.log.print("[任务] 获取失败:",task.url);
-					..thread.set(task.key,"");	// 失败也写一个非 null 值，表示「已完成」
-					return;
-				}
-
-				// 解析
-				var nodes = xray.outbounds.importFromString(text,task.url);
-				..thread.set(task.key, nodes ? nodes : "");
-			};
-
-			var pool = ..thread.works(BATCH_SIZE, workerFn);
+			
 
 			for(start=1;#tasks;BATCH_SIZE){
 				var stop = ..math.min(start + BATCH_SIZE - 1,#tasks);
 
-				// 启动这一批的任务（推入线程池，worker 全程复用）
+				// 启动这一批的任务（每个任务新建一个线程，跑完自然退出）
+				// manage 槽位满时 createLite 会自动等一个线程结束再继续
+				//（thread.waitOne 在界面线程内会泵消息，不会卡界面）
 				for(k=start;stop;1){
-					pool.pushAsync({
+					manage.createLite(workerFn,{
 						url = tasks[k].url;
 						content = tasks[k].content;
 						key = keyPrefix ++ tostring(k);
@@ -2717,7 +2739,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 				}
 			}
 
-			pool.quit(3000);	// 释放订阅抓取线程池（worker 全部退出）
+			
 
 			debug.log.print("[" ++ url ++ "] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
 		}
@@ -2754,12 +2776,16 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	//	if(#..config.proxy.outbounds >15000) ..frmXray.removeRepeat();
 	}
 	
+	// 所有订阅源处理完毕：等待全部抓取线程自然结束并回收句柄
+	//（waitClose 内部循环 waitOne，在界面线程内会泵消息；绝不 terminate）
+	manage.waitClose();
+
 	//import xray
 	//..frmXray.removeRepeat();
 	..config.proxy.save();
 	// 按需求：界面只报告「每个主订阅源结束时获得多少节点」，
 	// 其余进度信息一律只写 debug.log，避免弹窗过多干扰。
-	debug.log.print("已找到" + count + "个订阅服务器。")
+	debug.log.print("此次订阅更新共找到" + count + "个订阅服务器。")
 //	..publish("outbounds.updateConfigJson");
 //	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
 

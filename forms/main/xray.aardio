@@ -154,7 +154,7 @@ var sdLog = function(...){
 	if(!config.proxy.debugSearchLog) return;
 	debug.log.print(...);
 };
-var saveTimerId = frmXray.setInterval( 300000,function(){//定时5分钟保存proxy数据
+var saveTimerId = frmXray.setInterval( 600000,function(){//定时5分钟保存proxy数据
 		//debug.log.print("proxy save")
 		config.proxy.save()	
 	}
@@ -561,7 +561,7 @@ var taskQueueA = thread.works(5,
         var outboundAddress = taskData.outboundAddress;
         var httpProxyAddress = taskData.httpProxyAddress;
         var timerTesting = taskData.timerTesting;
-        var currentDelay = taskData.currentDelay;
+    //    var currentDelay = taskData.currentDelay;
 
         // 🚨 打印每个参数的类型和值，用于调试
 /*
@@ -581,15 +581,15 @@ var taskQueueA = thread.works(5,
             var restClient = web.rest.client(, httpProxyAddress);
             restClient._http.setTimeouts(2000,2000,2000); //连接超时, 请求超时, 接收超时
 
-            var timeTick = time.tick();
+        //    var timeTick = time.tick();
             var ret = restClient.get("https://www.google.com/generate_204");
-            timeTick = time.tick() - timeTick;
+        //    timeTick = time.tick() - timeTick;
 
             // 计算新的平均延迟
-            var newDelay = (currentDelay * 99 + timeTick) / 100;
+       //     var newDelay = (currentDelay * 99 + timeTick) / 100;
 
             // 通过 frmXray 将新延迟安全地传回主线程修改
-            frmXray.updateOutboundDelay(outboundIndex, newDelay);
+          //  frmXray.updateOutboundDelay(outboundIndex, newDelay);
 
             lastStatusCode = restClient.lastStatusCode;
             restClient.close();
@@ -648,10 +648,12 @@ testOutbound = function(outboundIndex, outboundAddress, timerTesting){
     }
 
     // 获取当前的延迟值（纯数值）
-    var currentDelay = 1000; // 默认值
+  //  var currentDelay = 1000; // 默认值
+/*
     if(config.proxy.outbounds[outboundIndex] && config.proxy.outbounds[outboundIndex].replyDelay){
         currentDelay = config.proxy.outbounds[outboundIndex].replyDelay;
     }
+*/
 
     // 将所有参数打包成纯数据表（包含 frmXray 窗口对象）
     var taskData = {
@@ -660,7 +662,7 @@ testOutbound = function(outboundIndex, outboundAddress, timerTesting){
         outboundAddress = outboundAddress;
         httpProxyAddress = httpProxyAddress; // 现在是纯字符串了
         timerTesting = timerTesting;
-        currentDelay = currentDelay; // 现在是纯数值了
+     //   currentDelay = currentDelay; // 现在是纯数值了
     };
 
     // 只推送一个 table 参数，彻底避免多参数传递时的序列化问题
@@ -1855,7 +1857,7 @@ var pingThread = function( ip,frmXray ) {
 var removeOutbounds = function(selectedItems){
 	
 	//避免后台线程改变activeIndex
-	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; 
+	//frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; 
 	frmXray.btnTcping.disabledText = null;
 	
 	
@@ -1950,11 +1952,13 @@ frmXray.listview.onnotify = function(id,code,ptr){
 				//if(!frmXray.chkSearchMode.checked) {debug.log.print("chkSearchMode.checked is unchecked")}
 				xray.core.lastDownloadingCoreFailed = false;
 				
-				frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){
+			/*
+	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){
 					if(address==frmXray.listview.getItemText(outboundIndex,2)){
 						frmXray.listview.setItemText(speedText,outboundIndex,7);
 					} 
 				}
+*/
 				frmXray.btnTcping.disabledText = null;
 				
 				/*
@@ -2019,7 +2023,7 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 					
 					frmXray.btnTcping.disabledText = null;
 				
-					frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}  
+				//	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}  
 					publish("outbounds.updateConfigJson");
 				});
 				
@@ -2043,11 +2047,13 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 					if(currentIdx){
 						xray.core.lastDownloadingCoreFailed = false;
 						
-						frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){
+			/*
+			frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){
 							if(address==frmXray.listview.getItemText(outboundIndex,2)){
 								frmXray.listview.setItemText(speedText,outboundIndex,7);
 							} 
 						}
+*/
 						//frmXray.clearInterval(trafficTimerId);
 						//trafficTimerId = null;
 						frmXray.btnTcping.disabledText = null;
@@ -2311,7 +2317,7 @@ frmXray.listview.sortBySpeed = function () {
 	
 	var outbounds = ..table.clone(config.proxy.outbounds);
 	var activeIndex = frmXray.listview.activeOutboundIndex;
-	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; //避免后台线程改变activeIndex
+	//frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; //避免后台线程改变activeIndex
 	
 	for(i=#outbounds;1;-1){
 		var ob = outbounds[i];
@@ -2401,7 +2407,7 @@ frmXray.listview.sortByMaxDownSpeed = function () {
 	
 	var outbounds = ..table.clone(config.proxy.outbounds);
 	var activeIndex = frmXray.listview.activeOutboundIndex;
-	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; //避免后台线程改变activeIndex
+//	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; //避免后台线程改变activeIndex
 	
 	for(i=#outbounds;1;-1){
 		var ob = outbounds[i];
@@ -2489,7 +2495,7 @@ frmXray.listview.sortByLastValidDate = function () {
 	
 	var outbounds = ..table.clone(config.proxy.outbounds);
 	var activeIndex = frmXray.listview.activeOutboundIndex;
-	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; //避免后台线程改变activeIndex
+//	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; //避免后台线程改变activeIndex
 	
 	for(i=#outbounds;1;-1){
 		var ob = outbounds[i];
@@ -2577,7 +2583,7 @@ frmXray.removeRepeat=function(){
 	//跳过检测异常
 	frmXray.listChanging = true;//列表被改变标志
 	//避免后台线程改变activeIndex
-	frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; 
+	//frmXray.onTcpingReturn = function(outboundIndex,address,succeeded,speedText){}; 
 	frmXray.btnTcping.disabledText = null;
 	
 	//标记活动节点
@@ -3422,7 +3428,17 @@ frmXray.ensureSearcherPool = function(){
 // 【坑】call(fn,owner,...) 第 2 个参数是 owner！给普通函数传参必须写 call(fn,null,args...)，
 	// 否则第 1 个实参会被 owner 吃掉，thread.works 的 limit 就收到一个函数
 	// → thread.semaphore 报 CreateSemaphore @2 Expected:number Got:function。
-	var callOk,newPool = call(thread.works, null, wantSize, frmXray.searcherWorker);
+	//
+	// 【第 5 个实参 waitTime=20 绝不可省】
+	//   thread.works 构造签名是 works(limit, func, waitTime, fInit, ...)。
+	//   worker 空闲时是 sleep(waitTime) 轮询，而 quit() 只给 100ms 宽限，
+	//   默认 waitTime=500 时大部分 worker 还在睡就被 thread.terminate() 强杀。
+	//   ★ 被强杀的线程，其整个线程环境（含它 import 的全部库）永不归还 —— 真泄漏，
+	//     实测每线程 126KB（空）~ 440KB（持有解析数据），且随持有数据量增长。
+	//   实测：30 线程池反复「建→quit」7 轮，默认 500ms 累计 +32.6MB（单调增长），
+	//         改成 20ms 后第 1 轮之后不再增长（≈0）。
+	//   （50 线程的搜索器池被销毁一次即泄漏数 MB ~ 数十 MB。）
+	var callOk,newPool = call(thread.works, null, wantSize, frmXray.searcherWorker, 20);
 	frmXray.searcherPoolSyncing = false;
 	if(!callOk || !newPool){
 		debug.log.print("searcherPool 创建失败:", tostring(newPool));

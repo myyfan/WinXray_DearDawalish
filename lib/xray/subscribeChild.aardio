@@ -1,0 +1,164 @@
+//xray.subscribeChild 订阅抓取子进程入口
+//
+//主进程用参数 "--subscribeChild=<任务文件>" 启动同一个 exe，
+//本模块在独立进程里完成「抓取 + 解析 + 去重」，把结果写成 JSON 后退出。
+//
+//为什么要放到子进程：
+//   aardio 基于 Lua 系 GC，释放「海量小对象」（订阅解析出来的每个节点都是几十个字段的小表）
+//   时，内存只退回到自己的空闲池，不会调用 VirtualFree 还给系统；实测残留约 20%，
+//   且堆只涨不缩 —— 同进程里订阅一次会让 commit 永久长高约 500MB，
+//   再怎么 collectgarbage / HeapCompact 都下不来。
+//   放进子进程后，进程一退出，操作系统会把它的全部内存（含碎片）整体回收。
+//
+//任务文件（JSON）字段：
+//   urls         [必填] 订阅源网址数组
+//   resultPath   [必填] 结果文件路径
+//   prefillKeys  [可选] 已有节点的 "address:port" 数组，用于预填充去重
+//   batchSize    [可选] 每批并发数（默认 8）
+//   progressPath [可选] 进度文件（逐行追加 JSON，供主进程实时展示）
+//   logPath      [可选] 过程日志文件（逐行追加 JSON，仅供排查）
+//
+//结果文件（JSON）：{ ok=true; nodes=[节点数组]; stats={count;sources;prefill} }
+//                  或 { ok=false; err="错误信息" }
+
+namespace xray.subscribeChild;
+
+import web.json;
+import xray.subscribeFetch;
+
+// 逐行追加一个 JSON 记录（progress / log 都是 jsonl 格式，主进程只用读到新增行）
+var writeJsonLine = function(path,obj){
+	if(!path || !#path) return;
+	..string.save(path, ..web.json.stringify(obj) ++ '\n', true/*追加*/);
+};
+
+// 安装静默日志存根。
+// 为什么需要：xray.outbounds 内部到处在用 ..debug.log.print（例如 extractLinksFromUrl），
+//   但子进程既不该打开控制台窗口，也不该和主进程抢同一个日志文件（config\dbg$.log）。
+//   把 global.debug 换成一个哑实现后，那些调用全部变成空操作。
+// 顺序要求：必须在 import xray.outbounds 之后调用 —— 库加载过程会重新定义
+//   global.debug，顺序反了就会被覆盖掉。
+var installSilentLog = function(){
+	..debug = {
+		log = {
+			print = function(...){};
+			write = function(...){};
+			checkSize = function(...){};
+			decode = function(...){};
+			setPath = function(...){};
+		};
+		hook = function(){ return {}; };
+		traceback = function(){ return ""; };
+	};
+};
+
+// 执行一个订阅抓取任务；返回 resultPath, result（result 也便于同进程调试）
+//
+// 参数 @options（可选）：
+//   silentLog [可选] 是否安装「静默日志存根」（默认 true）。
+//     · 子进程里必须为 true —— 它既不该打开控制台，也不该和主进程抢同一个日志文件。
+//     · ★ 但在「同进程模拟子进程」时必须显式传 false：
+//       否则 installSilentLog 会把主进程的 global.debug 换成哑实现，
+//       主进程自己的日志（config\dbg$.log 与界面日志）从此全部失效。
+//   onProgress [可选] 实时进度回调 function(rec)，rec 形如 {type="sourceBegin";url=...}
+//     或 {type="sourceEnd";url=...;added=...}。
+//     · 同进程调用（xray.childRunner.runInProcess）时靠它把进度实时转给界面；
+//       若不传，调用方只能等 run() 返回后再去读 progressPath 全量回放 ——
+//       那样所有源的开始/结束会在同一瞬间连续触发（进度框只会闪一下）。
+//     · 子进程调用时传 null（回调无法跨进程），主进程改为轮询 progressPath。
+//   onLog [可选] 实时日志回调 function(msg)，与 onProgress 同理。
+run = function(taskPath,options){
+	options = options : {};
+	var resultPath;
+	var progressPath;
+	var logPath;
+	var result;
+
+	// 先把库加载出来（会定义 global.debug.log），再装静默存根；顺序不能反。
+	import xray.outbounds;
+	if(options.silentLog !== false) installSilentLog();
+
+	var ok,err = ..call(
+		function(){
+			// 命令行传来的路径可能带引号（为了容忍空格，派发端会主动加引号），
+			// 这里先去掉首尾引号再交给 io.fullpath 归一化。
+			taskPath = ..string.trim(..tostring(taskPath),'"\'');
+			taskPath = ..io.fullpath(taskPath);
+
+			var taskText = ..string.load(taskPath);
+			if(!taskText){
+				result = {ok=false; err="无法读取任务文件: " ++ ..tostring(taskPath)};
+				return null;
+			}
+
+			var task = ..web.json.parse(taskText);
+			if(type(task)!=type.table){
+				result = {ok=false; err="任务文件不是合法的 JSON 对象"};
+				return null;
+			}
+
+			resultPath = task.resultPath;
+			progressPath = task.progressPath;
+			logPath = task.logPath;
+
+			if(!resultPath){
+				result = {ok=false; err="任务文件未指定 resultPath"};
+				return null;
+			}
+
+			// 组装订阅源表
+			var urlMap = {};
+			var urls = task.urls;
+			if(type(urls)==type.table){
+				for(i=1;#urls;1){
+					var u = urls[i];
+					if(type(u)==type.string && #u) urlMap[u] = true;
+				}
+			}
+
+			if(!..table.count(urlMap)){
+				result = {ok=false; err="任务文件未提供任何订阅源网址"};
+				return null;
+			}
+
+			// 开工前先写一条 progress，让主进程能立刻区分「还没开始」与「开始后卡住」
+			writeJsonLine(progressPath,{type="begin"; sources=#urls; time=..time.tick()});
+
+			var nodes,stats = ..xray.subscribeFetch.fetch(urlMap,{
+				prefillKeys = task.prefillKeys;
+				batchSize = task.batchSize;
+
+				// ★ 每个回调都是「先落盘、再实时外传」：
+				//   落盘保证子进程路径（主进程轮询 jsonl）行为不变；
+				//   外传让同进程路径能实时驱动界面进度框。
+				onLog = function(msg){
+					writeJsonLine(logPath,{msg=msg});
+					if(type(options.onLog)==type.function) options.onLog(msg);
+				};
+
+				onSourceBegin = function(url){
+					writeJsonLine(progressPath,{type="sourceBegin";url=url});
+					if(type(options.onProgress)==type.function) options.onProgress({type="sourceBegin";url=url});
+				};
+
+				onSourceEnd = function(url,added){
+					writeJsonLine(progressPath,{type="sourceEnd";url=url;added=added});
+					if(type(options.onProgress)==type.function) options.onProgress({type="sourceEnd";url=url;added=added});
+				};
+			});
+
+			result = { ok=true; nodes=nodes; stats=stats; };
+			return true;
+		},null
+	);
+
+	if(!ok){
+		result = {ok=false; err="子进程内部错误: " ++ ..tostring(err)};
+	}
+
+	if(resultPath && #resultPath){
+		..string.save(resultPath, ..web.json.stringify(result));
+	}
+
+	return resultPath, result;
+};

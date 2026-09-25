@@ -1,0 +1,374 @@
+//xray.subscribeFetch 订阅抓取与解析核心
+//
+//本模块只做「联网抓取 + 解析 + 去重」，不碰界面对象、不写 ..config、不写 config.proxy.outbounds。
+//返回值是纯数据（节点数组 + 统计表），因此它可以在三个位置运行：
+//   1) 界面线程 —— 开发环境降级路径（_STUDIO_INVOKED 时直接调用）
+//   2) 后台线程
+//   3) 独立子进程 —— 函数跑完进程即退出，抓取/解析产生的内存随进程 100% 归还系统
+//      （aardio 的 GC 对小对象堆释放不完整，同进程内订阅一次会让堆永久长高约 500MB；
+//        放到子进程就是为了让这部分内存能真正还给操作系统）
+
+namespace xray.subscribeFetch;
+
+import thread.works;
+
+// 注意：这里故意【不】import debug.log。
+// 本模块会被「订阅抓取子进程」加载，而 debug.log 的初始化/输出会打开控制台、
+// 并写入与主进程相同的日志文件（两边抢同一个文件）。
+// 过程日志统一走下面的 onLog 回调：主进程调用时由 childRunner 提供出口，
+// 子进程调用时由 subscribeChild 写成 jsonl 日志文件。
+
+// ==========================================================================
+// 收集本次要更新的订阅源网址
+// 参数 @outbondSubscribeUrlMap 调用方指定的订阅源表；传 null 时自动从 ..config 收集
+// 返回 { [url] = true }；无可用订阅源时返回空表
+// ==========================================================================
+collectSubscribeUrls = function(outbondSubscribeUrlMap){
+	if(outbondSubscribeUrlMap) return outbondSubscribeUrlMap;
+
+	var urlMap = {};
+
+	// 从现有节点的 subscribeUrl 字段收集（上轮订阅留下的来源标记）
+	var cfgOutbounds = ..config.proxy.outbounds : ..table.array();
+	for(k,ob in cfgOutbounds){
+		if(type(ob)!=type.table) continue;
+		if(ob.subscribeUrl){
+			urlMap[ob.subscribeUrl] = true;
+		}
+	}
+
+	// 从订阅源配置收集（checked === "启用" 的才启用）
+	var cfgSubscribeUrls = ..config.subscribe.subscribeUrls;
+	for(i=#cfgSubscribeUrls;1;-1){
+		var sub = cfgSubscribeUrls[i];
+		if(type(sub)!=type.table) continue;
+		if(sub.checked === "启用"){
+			urlMap[sub.url] = true;
+		}
+		else{
+			urlMap[sub.url] = null;
+		}
+	}
+
+	return urlMap;
+};
+
+// ==========================================================================
+// 抓取单个网址（纯网络操作：无 UI、无线程、无全局状态）
+//   · GitHub 链接走专用接口（能直接读网页形式的 blob 地址）
+//   · 其余走 inet.http（自动使用系统代理），并放宽超时
+// 说明：这里不复用 xray.outbounds.fetchSubscription，因为后者内部用 win.invoke
+//       开线程抓取（为了不冻结界面），在「订阅抓取子进程」里没有 win 库。
+//       本模块要能同时跑在界面线程 / 后台线程 / 独立子进程三种环境，所以自带抓取。
+// 返回内容字符串；失败返回 null
+// ==========================================================================
+var fetchPageRaw = function(url){
+	if(type(url)!=type.string) return null;
+	url = ..string.trim(url);
+	if(!#url) return null;
+
+	import inet.http;
+	import inet.url;
+	import web.rest.github;
+
+	// 单斜杠开头的相对路径：按 GitHub 规则补全域名（与 fetchSubscription 行为一致）
+	if( ..string.match(url,"^\s*/\N+\s*$") ){
+		if(!..string.find(url,"/<blob>|<raw>")){
+			url = ..inet.url.append("https://raw.githubusercontent.com",url);
+		}
+		else {
+			url = ..inet.url.append("https://github.com",url);
+		}
+	}
+
+	if( ..string.indexOf(url,"github.com")
+		|| ..string.indexOf(url,"raw.githubusercontent.com") ){
+		var ret = ..web.rest.github.getContent(url);
+		if(ret) return ret;
+	}
+
+	var http = ..inet.http();
+	http.setTimeouts(8000,15000,15000);
+	return http.get(url);
+};
+
+// ==========================================================================
+// 抓取 + 解析 + 去重（核心）
+//
+// 参数 @urlMap  订阅源表 { [url] = true } 或 { [url] = 内容字符串 }；传 null 自动收集
+// 参数 @options 可选参数表：
+//     prefillKeys  已有节点的 "address:port" 字符串数组（跨进程传参用，优先）
+//     existedNodes 已有节点数组（同进程直接传 ..config.proxy.outbounds）
+//     batchSize    每批并发数，默认 8
+//     onSourceBegin = function(url)           每个订阅源开始处理
+//     onSourceEnd   = function(url,added)     每个订阅源结束（added = 该源新增的唯一节点数）
+//     onLog         = function(msg)           过程日志（默认 debug.log.print）
+//     onNodes       = function(nodes)         有新增时回调（nodes 为累计的节点数组）
+//
+// 返回 nodes（去重后的节点数组）, stats（统计表 {count;sources;prefill;empty}）
+// ==========================================================================
+fetch = function(urlMap,options){
+	options = options : {};
+
+	// 必须显式导入：本模块可能运行在「订阅抓取子进程」里，
+	// 那里是全新的线程/进程上下文，xray.outbounds 命名空间不会自动存在。
+	// （放在函数内而不是文件顶部，避免与 xray.outbounds 形成加载期循环导入。）
+	import xray.outbounds;
+
+	// 过程日志出口：主进程路径写 debug.log，子进程路径由调用方换成写日志文件。
+	// 注意不能直接写 `..debug.log.print` 取值 —— 子进程里 global.debug.log 为 null，
+	// 对 null 取成员会抛错，所以必须先判空再取函数。
+	var onLog;
+	if(type(options.onLog)==type.function){
+		onLog = options.onLog;
+	}
+	elseif(..debug.log){
+		onLog = ..debug.log.print;
+	}
+	else{
+		onLog = function(msg){};	// 没有日志出口时静默
+	}
+
+	var batchSize = ..tonumber(options.batchSize);
+	if(!batchSize || batchSize<1) batchSize = 8;
+	batchSize = ..math.floor(batchSize);// 每一批的硬上限（毫秒）：防止个别抓取线程永不返回时把整个订阅流程挂死。
+	// 正常批次远低于它，只有「等不到结果」的极端情况才会触发。
+	var batchDeadlineMs = ..tonumber(options.batchDeadlineMs);
+	if(!batchDeadlineMs || batchDeadlineMs<5000) batchDeadlineMs = 60000;
+
+	urlMap = collectSubscribeUrls(urlMap);
+	if(!..table.count(urlMap)){
+		onLog("[订阅] 当前未启用任何订阅源");
+		return ..table.array(),{count=0;sources=0;prefill=0;empty=true};
+	}
+
+	// ==================================================================
+	// 【跨源去重 + 预填充】seenKeys 放在订阅源循环之外：
+	//   1) 放在循环内 → 每个订阅源各建一份索引，源与源之间完全不去重，
+	//      同一个节点会被反复导入（实测一次更新解析出 2 万+ 个，其中 9914 个是重复的）。
+	//   2) 预填充库里已有的节点 → 重复节点在这里就被直接丢弃，
+	//      连结果数组都进不去，避免「先全部导入 → 再全部删除」的双倍内存峰值。
+	//   3) 语义与 removeRepeat 的「保留序号在前的」完全一致：库里已有的节点会胜出。
+	// ==================================================================
+	var seenKeys = {};
+	var prefillCount = 0;
+
+	if(type(options.prefillKeys)==type.table){
+		// 子进程路径：只传 "address:port" 字符串，体积远小于整表序列化
+		for(i=1;#options.prefillKeys;1){
+			var k = options.prefillKeys[i];
+			if(k && #k){
+				seenKeys[k] = true;
+				prefillCount++;
+			}
+		}
+	}
+	elseif(type(options.existedNodes)==type.table){
+		// 同进程路径：直接用节点表，省掉一次字符串构造
+		for(k,ob in options.existedNodes){
+			if(type(ob)!=type.table) continue;
+			seenKeys[ ..tostring(ob.address) ++ ":" ++ ..tostring(ob.port) ] = true;
+			prefillCount++;
+		}
+	}
+
+	onLog("[去重] 预填充库中已有节点 " ++ prefillCount ++ " 个（这些节点本次将被直接跳过）");
+
+	var outNodes = ..table.array();
+
+	// 把一批节点并入结果集（逐节点去重，重复的直接丢弃，绝不进入数组占内存）
+	var addNodes = function(nodes){
+		if(type(nodes)!=type.table) return 0;
+		var added = 0;
+		for(i=1;#nodes;1){
+			var ob = nodes[i];
+			if(type(ob)!=type.table) continue;
+			var key = ..tostring(ob.address) ++ ":" ++ ..tostring(ob.port);
+			if(seenKeys[key]) continue;		// 已存在 → 直接丢弃
+			seenKeys[key] = true;
+			..table.push(outNodes,ob);
+			added++;
+		}
+		return added;
+	};
+
+	var sourceCount = 0;
+	var tAll = ..time.tick();
+
+	for(url,data in urlMap){
+		if(type(options.onSourceBegin)==type.function) options.onSourceBegin(url);
+
+		// ---- ① 主订阅源：顺序获取（数量少，不值得并发）----
+		//    fetchSubscription 负责「获取」（唯一的联网入口）
+		//    importFromString  负责「解析」（永不联网）
+		var content;
+		if(type(data)==type.string && #data){
+			content = data;						// 调用方已直接给出内容
+		}
+		else{
+			content = fetchPageRaw(url);
+		}
+
+		if(!content){
+			onLog("[" ++ url ++ "] 主订阅源获取失败");
+		}
+
+		// ---- ② 组装任务列表：主订阅源内容 + 全部二级链接 ----
+		//    每个任务都要「（必要时）获取 + 解析」。数量可能很多（一个页面几十上百个链接），
+		//    串行会长时间占住线程，所以要并发；但结果不能全部驻留等最后一起处理，
+		//    所以分批启动、谁先完成谁先合并，合并后立即释放跨线程数据。
+		var tasks = ..table.array();
+		if(content){
+			..table.push(tasks,{url=url;content=content;isMain=true});
+		}
+
+		var linkTasks = ..xray.outbounds.extractLinksFromUrl(url,,content);
+		for(k,t in linkTasks){
+			..table.push(tasks,{url=t.url;content=t.content;isMain=false});
+		}
+
+		var newBefore = #outNodes;
+
+		if(#tasks){
+			onLog("[" ++ url ++ "] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
+
+			var tBegin = ..time.tick();
+			var keyPrefix = "subTask_" ++ ..tostring(..string.crc32(url)) ++ "_" ++ ..tostring(tBegin) ++ "_";
+
+			// 【为什么用固定线程池，而不是「每个链接一个 thread.invoke」】
+			//   aardio 中每个新建线程都会把 import 的库在自己的线程环境里重新编译一份，
+			//   实测每创建一个「import + 解析」的线程会额外常驻约 1.3~1.9MB，且回收明显滞后。
+			//   一个订阅源动辄几十上百个二级链接，旧写法会让内存一路上涨且订阅结束后也不回落
+			//   （实测 190MB → 495MB）。改成固定并发线程池后 worker 全程复用，占用恒定。
+			var workerFn = function(task){
+				import inet.http;
+				import web.rest.github;
+				import xray.outbounds;
+
+				// 内容已给出（主订阅源 / 已抓到的二级页）则直接用，否则在线程内抓取。
+				// 注意：aardio 中空字符串 "" 是真值，必须同时检查长度
+				var text = task.content;
+				if(type(text)!=type.string || !#text){
+					if( ..string.indexOf(task.url,"github.com")
+						|| ..string.indexOf(task.url,"raw.githubusercontent.com") ){
+						text = ..web.rest.github.getContent(task.url);
+					}
+					if(!text){
+						var http = inet.http();
+						http.setTimeouts(8000,15000,15000);
+						text = http.get(task.url);
+					}
+				}
+
+				if(!text){
+					// 失败也写一个非 null 值，表示「已完成」，否则收割端无法区分「未完成」与「失败」
+					..thread.set(task.key,"");
+					return;
+				}
+
+				// 解析
+				var nodes = xray.outbounds.importFromString(text,task.url);
+				..thread.set(task.key, nodes ? nodes : "");
+			};
+
+			// 第 3 个实参 waitTime=20 绝不可省：
+			//   worker 空闲时是 sleep(waitTime) 轮询，而 quit() 只等 100ms，
+			//   默认 waitTime=500 时大部分 worker 还在睡就被 thread.terminate() 强杀，
+			//   被强杀线程的整个环境（含它 import 的库、以及它当时持有的解析数据）
+			//   永不归还 —— 这是"每次订阅都涨内存且不释放"的主因之一。
+			var pool = ..thread.works(batchSize,workerFn,20);
+
+			for(start=1;#tasks;batchSize){
+				var stop = ..math.min(start + batchSize - 1,#tasks);
+
+				// 启动这一批的任务（推入线程池，worker 全程复用）
+				for(k=start;stop;1){
+					pool.pushAsync({
+						url = tasks[k].url;
+						content = tasks[k].content;
+						key = keyPrefix ++ ..tostring(k);
+					});
+				}
+
+// 收割这一批：谁先完成谁先合并（thread.get 是非阻塞读取）
+				var pending = [];
+				for(k=start;stop;1) ..table.push(pending,k);
+
+				// 【看门狗 · 必须有】worker 若在写入共享区之前就出错（例如
+				//   web.rest.github.getContent 抛异常、线程被强行终止），那个键永远不会被写入，
+				//   thread.get 于是一直返回 null → 原来的写法会永远等下去，把界面线程挂死。
+				//   这里给每批设硬上限，超时就把未返回的当作失败放弃。
+				var tBatch = ..time.tick();
+				var timedOut = 0;
+
+				while(#pending){
+					var stillPending = [];
+					for(i=1;#pending;1){
+						var pk = pending[i];
+						var key = keyPrefix ++ ..tostring(pk);
+						var nodes = ..thread.get(key);
+
+						if(nodes === null){		// 尚未完成
+							..table.push(stillPending,pk);
+							continue;
+						}
+
+						..thread.set(key,null);		// 立即释放跨线程共享区内存
+						if(type(nodes)==type.table){
+							var added = addNodes(nodes);	// ← 完成一批就立即去重合并
+							onLog("[任务] " ++ tasks[pk].url ++ "获得" ++ #nodes ++ "个， 新增 " ++ added ++ " 个唯一节点，累计 " ++ #outNodes);
+						}
+					}
+
+					if(!#stillPending) break;
+
+					if(..time.tick() - tBatch > batchDeadlineMs){
+						timedOut = #stillPending;
+						for(i=1;#stillPending;1) ..thread.set(keyPrefix ++ ..tostring(stillPending[i]),null);
+						break;
+					}
+
+					if(#stillPending == #pending){
+						// 本批尚无任何结果：稍等片刻。thread.delay 会泵界面消息，不会卡界面
+						..thread.delay(20);
+					}
+					pending = stillPending;
+				}
+
+				if(timedOut) onLog("[" ++ url ++ "] 本批超时(>" ++ batchDeadlineMs ++ "ms)，已放弃 " ++ timedOut ++ " 个未返回的任务");
+			}
+
+			pool.quit(3000);	// 释放订阅抓取线程池（worker 全部退出）
+
+			onLog("[" ++ url ++ "] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #outNodes ++ " 个");
+		}
+
+		var addedThis = #outNodes - newBefore;
+		sourceCount++;
+
+		if(type(options.onSourceEnd)==type.function) options.onSourceEnd(url,addedThis);
+		if(type(options.onNodes)==type.function && addedThis>0) options.onNodes(outNodes);
+	}
+
+	onLog("[订阅] 全部订阅源处理完成，共 " ++ #outNodes ++ " 个唯一节点，耗时 " ++ (..time.tick()-tAll) ++ " ms");
+
+	return outNodes,{
+		count = #outNodes;
+		sources = sourceCount;
+		prefill = prefillCount;
+	};
+};
+
+// ==========================================================================
+// 从节点数组生成 "address:port" 字符串数组（跨进程传给子进程做预填充去重）
+// ==========================================================================
+exportPrefillKeys = function(outbounds){
+	var keys = ..table.array();
+	if(type(outbounds)!=type.table) return keys;
+	for(k,ob in outbounds){
+		if(type(ob)!=type.table) continue;
+		if(ob.address === null && ob.port === null) continue;
+		..table.push(keys, ..tostring(ob.address) ++ ":" ++ ..tostring(ob.port));
+	}
+	return keys;
+};

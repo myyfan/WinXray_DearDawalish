@@ -1,0 +1,547 @@
+//xray.childRunner 把「重活」放到子进程里跑的主进程侧派发器
+//
+//背景：aardio 基于 Lua 系 GC，释放「海量小对象」时内存只退回自己的空闲池，
+//      不还给操作系统，堆只涨不缩。实测同一进程内：
+//        · 跑一轮后台搜索    → commit 永久 +100MB
+//        · 跑一轮订阅更新    → commit 永久 +500MB
+//      再怎么 collectgarbage / HeapCompact 都下不来（数据只是被换出到页面文件）。
+//
+//对策：把「抓取 + 解析」这类「会产生海量小对象」的任务丢到一个独立子进程里（同一个 exe），
+//      子进程干完写结果到文件后退出，操作系统会把它的全部内存（含碎片）整体回收。
+//      主进程只读一个 JSON 结果，内存不会被推高。
+//
+//开发环境自动降级：aardio.exe 无法被命令行驱动「运行工程」（实测：传参数只会打开 IDE），
+//      所以在 _STUDIO_INVOKED 时直接同进程调用，保证 IDE 里照常可调试。
+
+namespace xray.childRunner;
+
+import process;
+import web.json;
+import debug;
+import debug.log;
+import xray.subscribeFetch;
+
+// 是否运行在 aardio 开发环境
+var isStudioInvoked = function(){
+	return .._STUDIO_INVOKED ? true : false;
+};
+
+// ==========================================================================
+// 读取进度文件的新增行（jsonl），并触发回调；返回新的字节游标
+// 只在完整的行边界上推进游标，避免把多字节字符 / JSON 行切碎
+// ==========================================================================
+var readProgress = function(path,pos,options){
+	if(!path || !#path) return pos;
+
+	var text = ..string.load(path);
+	if(!text) return pos;
+
+	// 找到最后一个换行符的位置（只在行边界推进游标）
+	var lastNL = 0;
+	for(i=#text; (pos+1); -1){
+		if(text[i] == 10/*'\n'*/){
+			lastNL = i;
+			break;
+		}
+	}
+	if(!lastNL || lastNL <= pos) return pos;
+
+	var chunk = ..string.slice(text,pos+1,lastNL);
+	var lines = ..string.split(chunk,'\n');
+
+	for(i=1;#lines;1){
+		var line = ..string.trim(lines[i]);
+		if(!#line) continue;
+
+		var obj = ..web.json.parse(line);
+		if(type(obj)!=type.table) continue;
+
+		if(obj.type == "sourceBegin"){
+			if(type(options.onSourceBegin)==type.function) options.onSourceBegin(obj.url);
+		}
+		elseif(obj.type == "sourceEnd"){
+			if(type(options.onSourceEnd)==type.function) options.onSourceEnd(obj.url,obj.added);
+		}
+	}
+
+	return lastNL;
+};
+
+// ==========================================================================
+// 读取日志文件的新增行并逐行回调（只在完整行边界推进游标），返回新游标
+//
+// 用途：把子进程的 log.jsonl 实时转给调用方，让「没法给子进程下断点」的场合
+//      也能看着它一步步在干什么（这是子进程路径最主要的调试手段）。
+// ==========================================================================
+var forwardChildLog = function(path,pos,callback){
+	if(!path || !#path) return pos;
+
+	var text = ..string.load(path);
+	if(!text) return pos;
+
+	var lastNL = 0;
+	for(i=#text; (pos+1); -1){
+		if(text[i] == 10/*'\n'*/){
+			lastNL = i;
+			break;
+		}
+	}
+	if(!lastNL || lastNL <= pos) return pos;
+
+	var chunk = ..string.slice(text,pos+1,lastNL);
+	for(line in ..string.lines(chunk)){
+		line = ..string.trim(line);
+		if(!#line) continue;
+		var obj = ..web.json.parse(line);
+		var msg = line;
+		if(type(obj)==type.table){
+			msg = obj.msg;
+			if(type(msg)!=type.string) msg = line;
+		}
+		callback(msg);
+	}
+
+	return lastNL;
+};
+
+// ==========================================================================
+// 同进程执行（开发环境降级路径 / 子进程启动失败时的兼容路径）
+//
+// ★ 这里刻意【不直接调 fetch】，而是走与子进程【完全相同】的任务文件流程：
+//     构造 task.json  →  xray.subscribeChild.run()  →  读 result.json
+//
+//   理由：让「IDE 里 F5 跑的代码」与「发布后子进程里跑的代码」逐行一致。
+//   于是子进程路径里的任何问题（task 构造、磁盘预加载、结果解析、进度回传）
+//   都能在 IDE 里直接断点调试；唯一无法在同进程复现的只剩「跨进程」这一层。
+//
+//   反例：若这里写成 return fetch(urlMap,options)，
+//   那么上面那些胶水层在开发环境就永远跑不到 ——
+//   这正是「改成子进程之后就没法调试」的来源。
+//
+//   （silentLog=false 必须传：否则 subscribeChild 会把主进程的 global.debug
+//     换成哑实现，主进程自己的日志会全部失效。）
+// ==========================================================================
+var runInProcess = function(urlMap,options){
+	import fsys;
+	import xray.subscribeChild;
+
+	options = options : {};
+
+	// ---- 收集订阅源网址（与子进程路径一致）----
+	var urls = ..table.array();
+	for(u,data in urlMap){
+		if(type(u)==type.string && #u) ..table.push(urls,u);
+	}
+	if(!#urls) return null,"没有可用的订阅源网址";
+
+	// ---- 预填充去重键：优先用调用方给的，否则从节点表导出 ----
+	var prefillKeys = options.prefillKeys;
+	if(type(prefillKeys)!=type.table){
+		prefillKeys = ..xray.subscribeFetch.exportPrefillKeys(options.existedNodes);
+	}
+
+	// ---- 工作目录（与子进程路径完全相同的命名规则）----
+	var stamp = ..tostring(..time.tick()) ++ "_" ++ ..tostring(..math.random(1000,9999));
+	var taskRoot = ..io.getSpecial(0x1c/*_CSIDL_LOCAL_APPDATA*/,"WinXray\subscribeTask");
+	..io.createDir(taskRoot);
+
+	var workDir = ..io.joinpath(taskRoot,stamp);
+	..io.createDir(workDir);
+
+	var taskPath = ..io.joinpath(workDir,"task.json");
+	var resultPath = ..io.joinpath(workDir,"result.json");
+	var progressPath = ..io.joinpath(workDir,"progress.jsonl");
+	var logPath = ..io.joinpath(workDir,"log.jsonl");
+
+	var devLibRoot = options.devLibRoot;
+	if(type(devLibRoot)!=type.string || !#devLibRoot) devLibRoot = ..io.fullpath("/lib");
+
+	if(!..string.save(taskPath, ..web.json.stringify({
+		urls = urls;
+		prefillKeys = prefillKeys;
+		batchSize = options.batchSize;
+		devLibRoot = devLibRoot;
+		resultPath = resultPath;
+		progressPath = progressPath;
+		logPath = logPath;
+	}))){
+		return null,"无法写入任务文件: " ++ ..tostring(taskPath);
+	}
+
+	// ---- ★ 同进程执行「子进程里那一行」：断点可直接命中 ----
+	//
+	// ★ 进度与日志都用「实时回调」转给调用方，而不是等 run() 返回后再去读文件
+	//   全量回放 —— 后者会让所有订阅源的开始/结束在同一瞬间连续触发，
+	//   表现就是「进度框只闪一下、日志在最后一次性涌出」。
+	//   实时回调让同进程路径与子进程路径的界面表现完全一致。
+	//   （子进程没法跨进程回调，只能轮询那两个 jsonl 文件，见 runInChild。）
+	var rp,result = ..xray.subscribeChild.run(taskPath,{
+		silentLog = false;
+
+		onProgress = function(rec){
+			if(rec.type == "sourceBegin"){
+				if(type(options.onSourceBegin)==type.function) options.onSourceBegin(rec.url);
+			}
+			elseif(rec.type == "sourceEnd"){
+				if(type(options.onSourceEnd)==type.function) options.onSourceEnd(rec.url,rec.added);
+			}
+		};
+
+		// 日志回调名与 runInChild 里的 options.onChildLog 保持一致
+		onLog = function(msg){
+			if(type(options.onChildLog)==type.function) options.onChildLog(msg);
+		};
+	});
+
+	// ---- 清理工作目录（要留档排查就把这一行注释掉）----
+	..fsys.delete(workDir);
+
+	if(type(result)!=type.table || !result.ok){
+		return null, (type(result)==type.table && result.err) ? result.err : "同进程执行失败";
+	}
+
+	return result.nodes, result.stats;
+};
+
+// ==========================================================================
+// 子进程执行
+// 参数 @urlMap 订阅源表 { [url] = true | 内容字符串 }
+// 参数 @options 同 xray.subscribeFetch.fetch，另支持：
+//     timeoutMs 子进程超时（默认 15 分钟）
+//     prefillKeys 直接指定 "address:port" 数组（不传则从 existedNodes 自动导出）
+// 返回 nodes, stats / null, err
+// ==========================================================================
+runInChild = function(urlMap,options){
+	import fsys;
+
+	var workDir;
+	var prcs;
+	var nodes;
+	var stats;
+	var err;
+	var hardFail;	// 停滞/超时 → 不允许回退到同进程重跑（那会在界面线程里再卡一次）
+
+	var ok,callErr = ..call(
+		function(){
+			// ---- 收集订阅源网址（跨进程只能传数组） ----
+			var urls = ..table.array();
+			for(u,data in urlMap){
+				if(type(u)==type.string && #u) ..table.push(urls,u);
+			}
+			if(!#urls){
+				err = "没有可用的订阅源网址";
+				return null;
+			}
+
+			// ---- 预填充去重键：优先用调用方给的，否则从节点表导出 ----
+			var prefillKeys = options.prefillKeys;
+			if(type(prefillKeys)!=type.table){
+				prefillKeys = ..xray.subscribeFetch.exportPrefillKeys(options.existedNodes);
+			}
+
+			// ---- 准备工作目录（%LOCALAPPDATA%\WinXray\subscribeTask\<stamp>） ----
+			var stamp = ..tostring(..time.tick()) ++ "_" ++ ..tostring(..math.random(1000,9999));
+			// 注意：aardio 双引号是原样字符串，这里必须写单个反斜杠分隔（写 \\ 会真的拼出两个反斜杠）
+			var taskRoot = ..io.getSpecial(0x1c/*_CSIDL_LOCAL_APPDATA*/,"WinXray\subscribeTask");
+			..io.createDir(taskRoot);
+
+			// 清掉历史遗留的工作目录（上一次运行卡住/被杀时没来得及删的）
+			// 只删 1 天以前的，避免误删「另一个实例正在用」的目录
+			var oldFiles,oldDirs = ..fsys.list(taskRoot);
+			if(oldDirs){
+				var nowTick = ..time.tick();
+				for(i=1;#oldDirs;1){
+					// 目录名形如 "<time.tick()>_<随机数>"，用前缀即可判断它有多旧
+					var d = ..io.joinpath(taskRoot,oldDirs[i]);
+					var numPrefix = ..tonumber(..string.match(oldDirs[i],"^(\d+)_"));
+					// time.tick() 是开机以来的毫秒数：数值比当前值小很多（>1天）的即视为陈旧
+					if(numPrefix && (nowTick - numPrefix) > 86400000){
+						..fsys.delete(d);
+					}
+				}
+			}
+
+			workDir = ..io.joinpath(taskRoot,stamp);
+			..io.createDir(workDir);
+
+			var taskPath = ..io.joinpath(workDir,"task.json");
+			var resultPath = ..io.joinpath(workDir,"result.json");
+			var progressPath = ..io.joinpath(workDir,"progress.jsonl");
+			var logPath = ..io.joinpath(workDir,"log.jsonl");
+
+			// ---- 写任务文件 ----
+			// devLibRoot：父进程「库根目录」的绝对路径。
+			// 子进程用它做「磁盘优先加载」（见 main.aardio 的 _ARGV.subscribeChild 分支），
+			// 目的：让子进程能跑你【当前正在改】的库代码，不必为了验证而重新发布 exe。
+			// 依据（实测）：
+			//   · 发布版 exe 里 import 是「内嵌资源优先」—— 磁盘上的同名库文件会被忽略；
+			//   · 而 loadcodex 是「磁盘优先」；
+			//   · 且 import 会先看模块是否已加载。
+			//   ⇒ 按依赖顺序用 loadcodex 预加载，后续 import 就会命中磁盘版本。
+			var devLibRoot = options.devLibRoot;
+			if(type(devLibRoot)!=type.string || !#devLibRoot) devLibRoot = ..io.fullpath("/lib");
+
+			var taskText = ..web.json.stringify({
+				urls = urls;
+				prefillKeys = prefillKeys;
+				batchSize = options.batchSize;
+				devLibRoot = devLibRoot;
+				resultPath = resultPath;
+				progressPath = progressPath;
+				logPath = logPath;
+			});
+
+			if(!..string.save(taskPath,taskText)){
+				err = "无法写入任务文件: " ++ ..tostring(taskPath);
+				return null;
+			}
+
+			// ---- 启动子进程（同一个 exe，走 main.aardio 的 _ARGV.subscribeChild 分支） ----
+			// exePath / childArgName 默认取「当前 exe + subscribeChild」；
+			// 留出这两个入口是为了在「不能重新发布 exe」的场合验证本函数
+			// （例如用现成的发布版 exe + 它已有的某个 _ARGV 分支来跑同一套流程）。
+			// 宿主 exe：优先 options.exePath，其次 config.proxy.subscribeChildExe
+			//（开发环境里 aardio.exe 无法运行本工程，必须用发布版 exe 当宿主），最后才是自身。
+			var exePath = options.exePath;
+			if(type(exePath)!=type.string || !#exePath) exePath = ..config[["proxy"]][["subscribeChildExe"]];
+			if(type(exePath)!=type.string || !#exePath) exePath = ..io._exepath;
+
+			var childArgName = options.childArgName;
+			if(type(childArgName)!=type.string || !#childArgName) childArgName = "subscribeChild";
+
+			// ★★★【必须传 waitInputTimeout=false，否则界面会冻结整个子进程运行期】★★★
+			//   aardio 的 process() 构造函数默认会执行
+			//     WaitForInputIdle(hProcess, INFINITE)
+			//   （见 aardio\lib\process\_.aardio:137-140：sa.waitInputTimeout 为 null 时用
+			//     0xFFFFFFFF 无限等待。）
+			//   而我们的子进程只做「抓取 + 解析 + 去重」，既不创建窗口也不跑消息循环，
+			//   于是「进程输入空闲」这个事件只有等子进程退出时才会被触发
+			//   —— process() 会一直阻塞到子进程干完活为止！
+			//   实测（子进程故意睡 32 秒）：
+			//     · 修复前：process() 阻塞 37047ms，期间界面不泵消息（Windows 给它挂上
+			//       「(未响应)」幽灵窗口），轮询循环一次都没跑（iters=1）；
+			//       process() 返回时子进程早已结束 → 所有回调在最后一次性涌出。
+			//       这就是「点更新订阅 → 界面冻结十几分钟 → 最后日志突然刷一屏」的真因。
+			//     · 修复后：process() 469ms 返回，轮询循环正常跑 299 轮、
+			//       thread.delay 照常泵消息，回调按源逐个增量触发。
+			prcs = ..process(exePath,'--' ++ childArgName ++ '="' ++ taskPath ++ '"',{waitInputTimeout=false});
+			if(!prcs){
+				err = "无法启动子进程: " ++ ..tostring(exePath);
+				return null;
+			}
+
+			// ---- 轮询：进度文件 + 结果文件 + 子进程存活 ----
+			var tStart = ..time.tick();
+			var timeoutMs = ..tonumber(options.timeoutMs);
+			if(!timeoutMs || timeoutMs<1000) timeoutMs = 600000;	// 10 分钟（总上限）
+
+			// 【停滞看门狗 · 必须有】子进程里只要有「一个」抓取线程永远不返回
+			//   （典型场景：系统代理指向一个「假活着」的 xray —— TCP 连得上，
+			//    但请求发出去后永远没有应答），子进程就会一直卡在那里。
+			//   原来的写法只能一直等到总超时（15 分钟），界面就在这段时间里卡死。
+			//   这里改成：进度游标与日志文件在 stallMs 内都没有增长 → 判定停滞，强制结束。
+			//   为什么取 90 秒：子进程每完成一批抓取就会写一行日志（"[任务] ...获得N个"），
+			//   所以「90 秒一点动静都没有」基本可以断定是卡住了，而不是「在慢慢干活」。
+			var stallMs = ..tonumber(options.stallMs);
+			if(!stallMs || stallMs<10000) stallMs = 90000;	// 90 秒
+
+			var pos = 0;
+			var lastPos = -1;
+			var logSize = 0;
+			var logPos = 0;	// 子进程日志的回传游标
+			var lastAlive = ..time.tick();
+			var finished = false;
+
+			while(true){
+				pos = readProgress(progressPath,pos,options);
+
+				if(..io.exist(resultPath)){
+					finished = true;
+					break;
+				}
+
+				// process 类没有 hasExited；用 stillActive() 判断（源码 process\_.aardio:227）
+				if(!prcs.stillActive()){
+					var code = prcs.getExitCode();
+					err = "子进程已退出但未产出结果（退出码 " ++ ..tostring(code) ++ "）";
+					break;
+				}
+
+				// ★ 子进程日志实时回传（让子进程路径「可观测」，无需断点）
+				if(type(options.onChildLog)==type.function){
+					logPos = forwardChildLog(logPath,logPos,options.onChildLog);
+				}
+
+				// 停滞检测：进度游标 + 日志文件大小，任一有增长就算「还在干活」
+				var curLogSize = ..io.getSize(logPath);
+				if(curLogSize === null) curLogSize = 0;
+				if(pos != lastPos || curLogSize != logSize){
+					lastPos = pos;
+					logSize = curLogSize;
+					lastAlive = ..time.tick();
+				}
+				elseif(..time.tick() - lastAlive > stallMs){
+					hardFail = true;
+					err = "子进程已停滞 " ++ ..math.floor(stallMs/1000) ++ " 秒（有请求一直不返回），已强制结束";
+					break;
+				}
+
+				if(..time.tick() - tStart > timeoutMs){
+					hardFail = true;
+					err = "子进程执行超时";
+					break;
+				}
+
+				// thread.delay 在界面线程会泵消息，所以等待期间界面不卡
+				..thread.delay(100);
+			}
+
+			if(!finished) return null;
+
+			// ---- 读结果 ----
+			var resultText = ..string.load(resultPath);
+			var result = ..web.json.parse( resultText : "" );
+
+			if(type(result)!=type.table || !result.ok){
+				err = result[['err']] : "结果文件解析失败";
+
+				// 排错时把子进程日志也带出来（只在出错时读，平时不读）
+				var logText = ..string.load(logPath);
+				if(logText) ..debug.log.print("[订阅子进程] 日志:\n" ++ ..string.slice(logText,1,4000));
+
+				return null;
+			}
+
+			nodes = result.nodes;
+			stats = result.stats;
+			return true;
+		},null
+	);
+
+// ---- 兜底：无论成败，确保子进程已结束（否则会变成孤儿进程，继续占着端口与内存） ----
+	//
+	// 【坑·已踩·必读】process.terminate() 内部会调用 this.free()，
+	//   把 this.handle 与 this.id 一起置为 null（见 ~lib\process\_.aardio:191-196 与 247-261）。
+	//   所以 terminate() 之后**绝不能再对同一个 prcs 调 stillActive()**，
+	//   否则会拿 null 当句柄去调 GetExitCodeProcess，弹出：
+	//     RAW CALLBACK ERROR ... Calling:'GetExitCodeProcess' Expected:Invalid POINTER! Got:null
+	//   （该错误只在发布版出现：只有子进程模式才创建 prcs；F5 走同进程，没有这个对象。）
+	if(prcs){
+		// 先留一份 PID —— terminate() 之后 prcs.id 会变成 null
+		var childPid = prcs.id;
+
+		// 1) 宽限期：正常完成时子进程刚写完 result.json，通常几百毫秒内会自己退出；
+		//    先等一等，别一上来就强杀（强杀会让它来不及清理自己的临时目录）。
+		var tGrace = ..time.tick();
+		while(prcs.stillActive() && (..time.tick()-tGrace) < 2000){
+			..thread.delay(50);
+		}
+
+		// 2) 还活着才 terminate（此后 prcs 已失效，一律改用 childPid 判断存活）
+		if(prcs.stillActive()){
+			prcs.terminate();
+		}
+
+		// 3) 【taskkill 兜底 · 必须有】实测 terminate() 对子进程并不总能生效：
+		//    进程列表里真的留下了「已经没人管、但还活着」的订阅子进程
+		//    （它们继续占着 socket 与内存，还会干扰后续判断）。
+		//    terminate 之后 prcs 已失效，改用 PID 重新打开一个「只用于查询存活」的对象
+		//    （进程已完全退出时 OpenProcess 失败 → 返回 null）。
+		if(childPid){
+			var pAlive = ..process(childPid);
+			if(pAlive && pAlive.stillActive()){
+				..raw.execute("taskkill","/F /T /PID " ++ ..tostring(childPid),,0x0/*_SW_HIDE*/);
+
+				var tKill2 = ..time.tick();
+				while(pAlive.stillActive() && (..time.tick()-tKill2) < 2000){
+					..thread.delay(50);
+				}
+
+				if(pAlive.stillActive()){
+					..debug.log.print("[订阅子进程] 警告：pid",childPid,"未能终止，请手动结束它");
+				}
+			}
+		}
+	}
+
+	// ---- 清理工作目录 ----
+	if(workDir && #workDir){
+		..fsys.delete(workDir);
+	}
+
+	if(!ok) return null,..tostring(callErr);
+	if(err) return null,err,hardFail;
+
+	return nodes ? nodes : ..table.array(), stats;
+};
+
+// ==========================================================================
+// 统一入口：按环境选择「子进程」或「同进程」
+// 返回 nodes, stats / null, err
+// ==========================================================================
+runSubscribeTask = function(urlMap,options){
+	options = options : {};
+
+	// ==================================================================
+	// 运行模式开关 —— 解决「改用子进程后就没法调试」的顾虑
+	//
+	//   逻辑代码（抓取/解析/去重）是同进程与子进程【完全共用】的
+	//   （都走 xray.subscribeFetch.fetch），所以在 IDE 里走同进程就能给它们下断点。
+	//   这里再给出显式开关，两种模式随时可切：
+	//
+	//     config.proxy.subscribeChildMode =
+	//       "auto"      （默认）开发环境同进程；发布后子进程
+	//       "inprocess" 强制同进程  → 日常断点调试
+	//       "child"     强制子进程  → 验证真实子进程管道（IPC / 看门狗 / 内存归还）
+	//
+	//   强制 "child" 需要「能被命令行驱动的发布版 exe」：
+	//     设 config.proxy.subscribeChildExe = "...\WinXray.exe"（绝对路径），
+	//     或调用时给 options.exePath。
+	//     （aardio.exe 不能运行本工程：实测传参数只会打开 IDE 窗口，
+	//       所以开发环境没指定宿主 exe 时会自动退回同进程，不会误弹 IDE。）
+	//
+	//   另外子进程支持「磁盘优先加载」（task.json 里的 devLibRoot），
+	//   所以即使在 IDE 里，只要宿主 exe 是你工程的发布版，子进程跑的仍是
+	//   你【当前正在改】的库代码 —— 不必为了验证而反复重新发布 exe。
+	// ==================================================================
+	var mode = options.mode;
+	if(type(mode)!=type.string || !#mode){
+		var cfgMode = ..config[["proxy"]][["subscribeChildMode"]];
+		mode = (type(cfgMode)==type.string && #cfgMode) ? cfgMode : "auto";
+	}
+
+	if(mode === "inprocess"){
+		..debug.log.print("[订阅] 模式=同进程（config.proxy.subscribeChildMode 强制为 inprocess，便于断点调试）");
+		return runInProcess(urlMap,options);
+	}
+
+	if(mode !== "child" && isStudioInvoked()){
+		..debug.log.print("[订阅] 模式=同进程（开发环境自动降级，便于断点调试；要验证子进程路径请把 config.proxy.subscribeChildMode 设为 child）");
+		return runInProcess(urlMap,options);
+	}
+
+	// 开发环境强制子进程、但没指定宿主 exe → 退回同进程（否则会把 aardio.exe 当宿主而弹出 IDE）
+	if(isStudioInvoked() && !options.exePath && !..config[["proxy"]][["subscribeChildExe"]]){
+		..debug.log.print("[订阅] 无法强制子进程：开发环境请先设 config.proxy.subscribeChildExe 指向一个发布版 exe；已退回同进程");
+		return runInProcess(urlMap,options);
+	}
+
+	// 发布环境（或显式强制 child）：丢给子进程（内存随子进程退出全部归还系统）
+	var nodes,statsOrErr,hardFail = runInChild(urlMap,options);
+
+	if(nodes === null){
+		// 「卡住/超时」这类失败【绝不能】回退到同进程重跑 ——
+		// 同一份任务在界面线程里跑，会把卡顿从「后台子进程」搬到「界面线程」，
+		// 也就是用户看到的「点订阅 → 界面长时间卡死」。这类失败直接放弃并上报。
+		if(hardFail){
+			..debug.log.print("[订阅子进程] 失败（" ++ ..tostring(statsOrErr) ++ "），已放弃（不回退到同进程重跑）");
+			return null,statsOrErr;
+		}
+
+		// 其余失败（子进程压根没启动起来等）回退到同进程，保证功能可用（宁慢不废）
+		..debug.log.print("[订阅子进程] 执行失败（" ++ ..tostring(statsOrErr) ++ "），已回退到同进程执行");
+		return runInProcess(urlMap,options);
+	}
+
+	return nodes,statsOrErr;
+};

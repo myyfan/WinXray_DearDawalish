@@ -142,7 +142,16 @@ var hpackStr = function(name, value){
 //返回可用的连接对象；失败返回 null,错误信息
 var openConn = function(host, port, timeoutMs){
 	var c = ..wsock.tcp.client();
-	if(!c.connect(host, port)){
+
+	/*
+	【必须用 connectTimeout，不能用 connect】
+	aardio 的 wsock.tcp.client.connect 内部直接调 wsock.connect（源码 ~\lib\wsock\tcp\client.aardio:89），
+	【没有任何超时】——对端不响应时会长时间阻塞，这是 UI 线程假死的经典成因。
+	connectTimeout 用「非阻塞 connect + select」实现，注意其超时单位是【秒】（不是毫秒）。
+	*/
+	var sec = (timeoutMs ? timeoutMs : 3000) / 1000;
+	if(!c.connectTimeout(host, port, sec)){
+		c.close(); //连接失败必须立刻释放套接字（否则句柄悬挂到 GC 才关，netstat 里会累积一堆 Bound）
 		return null, "无法连接 Xray API: " ++ host ++ ":" ++ port;
 	}
 	c.setTimeouts(timeoutMs, timeoutMs);

@@ -1209,6 +1209,17 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 
 //网络有问题的处理
 var retryOnNetworkAliveTimerId;
+
+/*
+【UI 线程禁网】网络检查一律丢后台线程，结果回 UI 处理。
+原来在 UI 线程直接调用 inet.http.isAlive（HTTP 往返 + DNS + 握手），会阻塞界面消息泵。
+netCheckAlive 必须是纯函数（跨线程序列化），内部引用全局要加 .. 前缀。
+*/
+var netCheckAlive = function(){
+	import inet.http;
+	return inet.http.isAlive(,false);
+};
+
 frmXray.onTcpingFailed = function(){
 	
 	frmXray.btnTcping.disabledText = null;	
@@ -1216,35 +1227,49 @@ frmXray.onTcpingFailed = function(){
 	
 	// 如果有值，就清除定时器
 	if(retryOnNetworkAliveTimerId){
-		frmXray.clearTimeout(retryOnNetworkAliveTimerId);
+		frmXray.clearInterval(retryOnNetworkAliveTimerId);
+		retryOnNetworkAliveTimerId = null;
 	}
 	
-	// 有没有网络
-	if(inet.http.isAlive(,false)){
-		// 有网络时，自动更新订阅
-		frmXray.autoUpdateSubscription(1000);
-	}
-	else {
-		// 没有网时，创建一个定时器，每隔1秒执行一次匿名函数
-		retryOnNetworkAliveTimerId = frmXray.setInterval( 
-			function(){ 
-				// 如果有激活了的服务器，那么retryOnNetworkAliveTimerId设为空，
-				// 并返回0，表示不再执行定时器函数
-				if(frmXray.listview.activeOutboundIndex){
-					retryOnNetworkAliveTimerId = null;
-					return 0;
-				}
-				
-				if(inet.http.isAlive(,false)){
-					// 检测到有网后，重新测延迟，并清除定时器
-					frmXray.btnTcping.oncommand();
-					retryOnNetworkAliveTimerId = null;
-					return 0;
-				}	
-			},1000
-		) 
-	}  
+	// 有没有网络（后台线程检查，不阻塞界面）
+	uiNet.async(netCheckAlive, null, frmXray,
+		function(alive){
+			if(alive){
+				// 有网络时，自动更新订阅
+				frmXray.autoUpdateSubscription(1000);
+			}
+			else {
+				// 没有网时，创建一个定时器，每隔1秒检查一次
+				if(retryOnNetworkAliveTimerId) frmXray.clearInterval(retryOnNetworkAliveTimerId);
+				retryOnNetworkAliveTimerId = frmXray.setInterval( 
+					function(){ 
+						// 如果有激活了的服务器，那么retryOnNetworkAliveTimerId设为空，
+						// 并返回0，表示不再执行定时器函数
+						if(frmXray.listview.activeOutboundIndex){
+							retryOnNetworkAliveTimerId = null;
+							return 0;
+						}
+						if(frmXray.networkAliveChecking) return;   // 防重入：上一轮还没回来就跳过
+						frmXray.networkAliveChecking = true;
+						uiNet.async(netCheckAlive, null, frmXray,
+							function(alive){
+								frmXray.networkAliveChecking = false;
+								if(alive){
+									// 检测到有网后，重新测延迟，并清除定时器
+									if(retryOnNetworkAliveTimerId) frmXray.clearInterval(retryOnNetworkAliveTimerId);
+									retryOnNetworkAliveTimerId = null;
+									frmXray.btnTcping.oncommand();
+								}
+							}
+						);
+					},1000
+				) 
+			}  
+		}
+	);
 } 
+
+
 
 import sysProxy; 
 import style;
@@ -4220,6 +4245,13 @@ frmXray.trafficStats = function(){
 	
 */
 	
+	/*
+	【UI 线程禁网】采样搬到常驻后台线程：UI 定时器只读「已发布的结果」，全程零 socket 调用。
+	（原来这里每一轮都在 UI 线程里直连 gRPC，内核未就绪时会把界面阻塞数秒）
+	*/
+	import TrafficStats;
+	TrafficStats.startSampler(apiTime);
+
 	trafficTimerId = frmXray.setInterval( 
 		function(){
 
@@ -4232,7 +4264,12 @@ frmXray.trafficStats = function(){
 			
 			import TrafficStats;
 
-			downValue,upValue = TrafficStats.start();
+			//【UI 线程禁网】只读后台采样线程已发布的结果（本调用不做任何网络 IO）
+			//自愈：采样线程若已退出（换代/异常），在这里重新拉起
+			if( !TrafficStats.samplerAlive() ){
+				TrafficStats.startSampler(apiTime);
+			}
+			downValue,upValue = TrafficStats.takeSample();
 
 			if(downValue){
 				var downTraffic = config.proxy.outbounds[currentOutboundIndex].trafficDown;

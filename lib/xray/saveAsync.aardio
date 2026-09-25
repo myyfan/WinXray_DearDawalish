@@ -1,0 +1,401 @@
+//saveAsync 大配置表「分块保存」
+import string.builder;	//★ 必须显式 import：命名空间内 ..string.builder 需要它已加载
+
+namespace xray.saveAsync;
+
+/*
+为什么需要这个模块
+==================
+fsys.table.save() 内部是 `table.tostring(this)` —— 一次性序列化整张表。
+实测（9010 个节点 / 4.1MB 的 proxy.table）：
+
+    table.tostring(proxy)   ≈ 5.4 秒
+    proxy.save()            ≈ 5.2 秒
+
+这 5 秒里界面线程完全不泵消息 ⇒ 界面硬卡（任务管理器显示「未响应」）。
+订阅更新的末尾会连存两次（updateSubscription 一次 + removeRepeat 一次）
+⇒ 硬卡约 10 秒。
+
+「让它更快」试过且都不行（实测数据）：
+    JSON.stringify(proxy)         4.9 秒
+    手写 builder 逐节点拼装       6.0 秒
+    丢给后台线程做                传输本身就要 6.7 秒（跨线程传表 = 序列化）
+⇒ aardio 里序列化上万个嵌套小表就是这个量级，快不了。
+
+既然快不了，就让它「不卡」：
+按节点分块序列化，每块之间手工泵一次消息 —— 但【丢弃 WM_TIMER】，
+于是整段保存期间界面照常重绘与响应，且绝不会有 aardio 定时器回调
+重入到序列化中途（详见下面 pump 的说明）。
+
+输出格式与 table.tostring 完全等价（可被 fsys.table / eval 正常加载）：
+    {
+    <其余字段>
+    outbounds=[{...},{...},...]
+    }
+注意 aardio 的 table.tostring 对「纯数组」输出 `[a,b]`（逗号 + 紧凑），
+对普通表输出 `{a=1;\nb=2;\n}`（分号 + 换行），本模块按同样规则生成。
+*/
+
+//每块序列化多少个节点后泵一次消息（越小界面越顺滑，总耗时略增）
+//实测每块约 0.45ms/节点，200 个节点约 90ms；每次泵消息约 16ms。
+var CHUNK = 200;
+
+//是否泵消息（0=完全不泵，仅用于纯性能测试）
+var PUMP_MS = 1;
+
+//==========================================================================
+// 内部工具
+//==========================================================================
+
+var writeFile = function(path,str){
+	var pathTemp = path + ".tmp";
+	for(i=1;3;1){
+		var file = ..io.file(pathTemp,"w+",0x20 /*_SH_DENYWR*/);
+		if(file){
+			file.write('\xEF\xBB\xBF');	// UTF-8 BOM（与 fsys.table.save 一致）
+			file.write(str);
+			file.close();
+
+			..io.remove(path);
+			..io.rename(pathTemp,path);
+			return true;
+		}
+		..sleep(100);
+	}
+	return false;
+};
+
+/*
+把任意值序列化为「不含外层括号」的片段。
+
+★ 一定要包一层纯数组 [v] 再剥掉括号，不能直接 table.tostring(v)。
+  原因：table.tostring 只在【顶层】输出多行美化格式，嵌套进容器里的值才是紧凑格式。
+    table.tostring({a=1;b=2})    -> "{\na=1;\nb=2;\n}"    ← 多行（每个节点都这样写，文件会大 280KB，实测）
+    table.tostring([{a=1;b=2}])  -> "[{a=1;b=2}]"         ← 紧凑（与 fsys.table 落盘的样子一致）
+  顺带这个写法也统一解决了标量（table.tostring 只接受 table 参数）：
+    table.tostring([123])   -> "[123]"    -> 剥掉首尾 -> "123"
+    table.tostring(["ab"])  -> "[\"ab\"]" -> 剥掉首尾 -> "\"ab\""
+*/
+var valueText = function(v){
+	return ..string.slice(..table.tostring([v]),2,-2);
+};
+
+
+//==========================================================================
+// 分块序列化 + 写文件
+//==========================================================================
+
+/*
+把配置表 @tbl 分块序列化后写入 @path。
+@options 可选字段：
+    chunkSize   每块节点数，默认 200（越小界面越顺滑，总耗时略增）
+    pumpMs      0 = 完全不泵消息（仅用于纯性能对照测试）；
+                其它值 = 每块泵一次消息（手工泵且丢弃 WM_TIMER，不会重入业务回调）
+    onProgress  可选回调 (done,total)，用于观察进度
+返回：成功 true，失败 false
+*/
+saveTable = function(tbl,path,options){
+	options = options : {};
+	var chunk = options.chunkSize : CHUNK;
+	var pumpMs = ( options.pumpMs === null ) ? PUMP_MS : options.pumpMs;
+
+	//------------------------------------------------------------------
+	// 泵消息（★ 保存期间绝不允许执行任何 aardio 定时器回调）
+	//
+	// 实测数据（本机，winform.setInterval(30ms) 计数）：
+	//     thread.delay(0)          -> 不泵消息（空操作），0.8ms/次
+	//     sleep(0)                 -> 不泵消息，0ms
+	//     thread.delay(1)          -> 泵消息（会执行定时器回调），16ms/次 ← 太贵
+	//     手工 PeekMessage 全派发  -> 0ms，但【会执行定时器回调】
+	//
+	// 「不执行定时器回调」必须做到，否则序列化做到一半会被重入：
+	//   aardio 的 setInterval 是 ::User32.SetTimer 实现的（win\ui\_.aardio:1440），
+	//   WM_TIMER 由 PeekMessage 合成、经 DispatchMessageW 走窗口过程
+	//   —— 等于在原生 API 的调用栈里执行了任意业务代码。
+	//
+	// 做法：手工泵消息，但【丢弃 WM_TIMER】。
+	//   实测：丢弃期间定时器回调 0 次；丢弃结束后定时器立刻恢复正常触发
+	//   （SetTimer 是周期性投递，丢掉一次不会饿死定时器）✓
+	//   WM_PAINT / 鼠标 / 窗口管理消息照常派发 ⇒ 界面照常重绘与响应，且几乎不耗时。
+	//
+	// 非界面线程没有消息队列，PeekMessage 直接返回 0 ⇒ 自动退化为空操作。
+	//------------------------------------------------------------------
+	var msgBuf = ..raw.buffer(64);
+	var pump = function(){
+		if(!pumpMs) return;
+
+		while( ::User32.PeekMessageW(msgBuf,null,0,0,1/*_PM_REMOVE*/) ){
+
+			//★ 丢弃 WM_TIMER：绝不让定时器回调重入到序列化中途
+			if( ..raw.convert(msgBuf,{INT hwnd;INT msg;},0).msg == 0x113/*_WM_TIMER*/ ){
+				continue;
+			}
+
+			::User32.TranslateMessage(msgBuf);
+			::User32.DispatchMessageW(msgBuf);
+		}
+	};
+
+	//------------------------------------------------------------------
+	// 1) 取出 outbounds（体积主体），其余字段单独成一小表
+	//------------------------------------------------------------------
+	var ob = tbl.outbounds;
+	var rest = {};
+	for(k,v in tbl){
+		if( k === "outbounds" ) continue;
+
+		//★ 必须跳过函数值。
+		//  原因：install() 给表对象挂了一个真实的 save 成员（覆盖元表里的方法），
+		//  而 for-in 会遍历到这个真实成员；table.tostring 对函数会写成 `save=null;`
+		//  —— 文件里因此多出一条 "save=null;"（实测踩到过）。
+		//  fsys.table 原生的 table.tostring(this) 看不到这个方法（它在元表里），所以不会有这条。
+		if( type(v) == type.function ) continue;
+
+		// 用 call 兜住：_ 前缀的字段名在 aardio 里是「只读字段」，
+		// 直接赋值可能报 "Can't modify the read-only field"。
+		// 兜住之后交给 table.tostring 处理，行为与 fsys.table.save 完全一致
+		// （实测 table.tostring 会自动跳过 cdata，例如 _gc 本来就不会落盘）。
+		..call(function(){ rest[k] = v; return true; });
+	}
+
+	var sb = ..string.builder();
+	sb.write("{");
+	//★ 这里必须写 '\n' 而不是 '\r\n'：
+	//  io.file(path,"w+") 是【文本模式】，会把 \n 自动翻译成 \r\n（fsys.table 也依赖这一点）。
+	//  若自己再写 '\r\n'，落盘就变成 '\r\r\n'（实测踩到过，文件头会多一个空行）。
+	sb.write('\n');
+
+	//------------------------------------------------------------------
+	// 2) 其余字段：表很小，一次序列化即可（耗时可以忽略）
+	//------------------------------------------------------------------
+	var restStr = ..table.tostring(rest);
+	if( #restStr >= 2 && restStr[1] == '{'# && restStr[#restStr] == '}'# ){
+		restStr = ..string.slice(restStr,2,-2);	// 剥掉外层花括号
+	}
+	// 注意 string.trim 的默认裁剪字符不含回车换行，必须显式指定（单引号里才是真 CR/LF）
+	restStr = ..string.trim(restStr,' \t\r\n');
+	if(#restStr){
+		sb.write(restStr);
+		//★ 必须补一个分号：aardio 的表构造器不接受「仅靠换行」分隔两个元素
+		//  （table.tostring 只在元素之间写 ';'，最后一个元素后面不写；
+		//    剥掉外层花括号后，末尾那个元素就直接贴上后面的 outbounds= 了，
+		//    报错是 "Expected:'}' Match for:'{' Near:'outbounds'"）
+		sb.write(";");
+		sb.write('\n');
+	}
+
+	//------------------------------------------------------------------
+	// 3) outbounds：逐项序列化，分块泵消息
+	//------------------------------------------------------------------
+	if( type(ob) == "table" ){
+
+		//------------------------------------------------------------------
+		// 先摸清 outbounds 的键结构。
+		//
+		// ★ 不能只看 table.isArray：实测 outbounds 除 9010 个数值键外还挂着一个
+		//   字符串键 fields（listview 列定义），而 table.isArray 对它【仍然返回 true】。
+		//   若照着 isArray 当纯数组写，fields 会被当成第 9011 个元素写出去
+		//   —— 结果是「节点数 9010 → 9011」且 fields 丢失（本项目实测踩到过）。
+		//------------------------------------------------------------------
+		var maxIdx = 0;
+		var strKeys = ..table.array();
+		var badKey = false;
+		for(k,v in ob){
+			if( type(k) == "number" ){
+				if(k > maxIdx) maxIdx = k;
+			}
+			elseif( type(k) == "string" ){
+				..table.push(strKeys,k);
+				if( !..string.match(k,"^\w+$") ) badKey = true;	// 非标识符键：裸写法表示不了
+			}
+			else{
+				badKey = true;
+			}
+		}
+
+		// 数值键必须从 1 连续到 maxIdx（无洞），才能用 table.tostring 的裸值写法
+		var dense = (maxIdx > 0);
+		if(dense){
+			for(i=1;maxIdx;1){
+				if( ob[i] === null ){ dense = false; break; }
+			}
+		}
+
+		// 与 table.tostring 保持一致的两种写法（语义等价）：
+		//   无洞 + 键都是标识符 -> [值,值,key:值]
+		//   其它情况           -> {[k]=值;[k2]=值2}
+		var asArray = dense && !badKey;
+
+		//先快照值（序列化期间会泵消息，用户可能改表；快照保证输出是自洽的）
+		//★ 稀疏分支也【必须】收集值！否则下面的循环拿不到任何值，
+		//  会把 outbounds 写成空表 —— 整批节点静默丢失（比崩溃更隐蔽）。
+		var vals = ..table.array();
+		var numKeys = ..table.array();	//仅稀疏分支使用：记录每个值对应的真实数值键
+		if(dense){
+			for(i=1;maxIdx;1){ ..table.push(vals,ob[i]); }
+		}
+		else{
+			for(k,v in ob){
+				if( type(k) == "number" ){
+					..table.push(numKeys,k);
+					..table.push(vals,v);
+				}
+			}
+		}
+		var strVals = ..table.array();
+		for(j=1;#strKeys;1){ ..table.push(strVals,ob[strKeys[j]]); }
+
+		var total = #vals + #strVals;
+		var done = 0;
+
+		sb.write("outbounds=");
+		sb.write( asArray ? "[" : "{" );
+
+		var first = true;
+		for(i=1;#vals;1){
+			if(!first) sb.write( asArray ? "," : ";" );
+			if(!asArray){
+				//稀疏分支：键必须用收集到的真实键，不能用循环序号 i
+				sb.write("[");
+				sb.write(..tostring(numKeys[i]));
+				sb.write("]=");
+			}
+			sb.write( valueText(vals[i]) );
+			first = false;
+
+			done++;
+			if( (done % chunk) == 0 ){
+				pump();
+				if(options.onProgress) options.onProgress(done,total);
+			}
+		}
+
+		for(j=1;#strVals;1){
+			var k = strKeys[j];
+			if(!first) sb.write( asArray ? "," : ";" );
+			if(asArray){
+				sb.write(k);
+				sb.write(":");
+			}
+			else{
+				sb.write("[");
+				sb.write(valueText(k));
+				sb.write("]=");
+			}
+			sb.write( valueText(strVals[j]) );
+			first = false;
+		}
+
+		sb.write( asArray ? "]" : "}" );
+		sb.write('\n');
+	}
+
+	sb.write("}");
+
+	var str = ..tostring(sb);
+	return writeFile(path,str);
+};
+
+//==========================================================================
+// 日志
+//
+// 保存期间界面是活的，所以这些日志能实时刷到界面上 —— 排查「卡在哪一步」时
+// 这是唯一看得到的线索（debug 窗口信息太少）。
+//==========================================================================
+
+var notify = function(s){
+	//写 debug.log（持久化，方便事后倒查）
+	var fn = ..debug[["log"]][["print"]];
+	if( type(fn) == type.function ) fn("[saveAsync] " ++ s);
+
+	//★ 同时发到界面日志（用户唯一能实时看到的地方）
+	if( type(..publish) == type.function ) ..publish("uiCommand.print","[保存] " ++ s);
+};
+
+//==========================================================================
+// 安装到 fsys.table 对象（覆盖它的 save 方法）
+//==========================================================================
+
+/*
+让 @cfgTable（一个 fsys.table 对象）以后的 save() 都走分块保存。
+
+覆盖 save 是安全的：fsys.table 的 _autoSave / assign 内部都是调 `this.save()`，
+实测覆盖后它们同样会走到这里（线程退出时的自动保存也一并受益）。
+
+@path 必须与 fsys.table 构造时用的路径完全一致，否则会写错文件。
+*/
+install = function(cfgTable,path){
+
+	var saving = false;
+	var dirty = false;
+
+	cfgTable.save = function(){
+
+		//★ 必须先把 owner 存进具名局部变量：
+		//  aardio 的 owner 是「调用点动态绑定」，嵌套匿名函数里 owner 是它自己的（call 未传 owner 时为 null）。
+		//  直接在闭包里写 owner 会拿到 null（本项目踩过：报 "Attempt to _get table 'tbl' Type:null"）。
+		var cfgObj = owner;
+
+		//保存期间会泵消息 ⇒ 事件回调可能再次触发 save（例如 5 分钟定时器）。
+		//此时只标记 dirty，等本轮结束后再补存一次，避免重入。
+		if(saving){
+			dirty = true;
+			return cfgObj;
+		}
+
+		saving = true;
+		var ok = false;
+		var err;
+
+		//★ 与原 fsys.table.save 保持一致：序列化前先调 beforeSave。
+		//  winform.bindConfig 会用它把界面控件的值写回配置表；
+		//  本项目目前没有用到，但保持一致可以避免以后引入 bindConfig 时静默丢数据。
+		if( type(cfgObj.beforeSave) == type.function ) cfgObj.beforeSave();
+
+		//大配置才报日志（避免"拖个滑块就存一次"这种高频小保存刷屏）
+		var ob = cfgObj.outbounds;
+		var nodeCount = ( type(ob) == "table" ) ? #ob : 0;
+		var tick0 = ..time.tick();
+		if( nodeCount > 500 ){
+			notify("正在保存配置（" ++ nodeCount ++ " 个节点），界面仍可操作…");
+		}
+
+		while(true){
+			dirty = false;
+			var r,e = ..call(function(){
+				return ..xray.saveAsync.saveTable(cfgObj,path);
+			});
+			if(r){
+				ok = true;
+			}
+			else{
+				err = e;
+				break;
+			}
+			if(!dirty) break;	//保存期间没有新的改动 ⇒ 收工
+		}
+
+		saving = false;
+
+		if( nodeCount > 500 ){
+			notify("配置已保存（耗时 " ++ (..time.tick() - tick0) ++ " ms）");
+		}
+
+		if(!ok){
+			// 出错时回退到 fsys.table 原来的实现（一次性序列化，会卡一下，但至少数据能落盘）。
+			// 注意：一定要把错误报出来 —— 否则分块逻辑坏掉时会「静默退化成原实现」，
+			// 表现是「功能看起来正常、只是照样卡」，极难发现（本项目已经踩过一次）。
+			var logFn = ..debug[["log"]][["print"]];
+			if( type(logFn) == type.function ) logFn("[saveAsync] 分块保存失败，已回退到一次性保存：",tostring(err));
+			..errput("xray.saveAsync 分块保存失败：" ++ tostring(err),2);
+
+			if( type(cfgObj.beforeSave) == type.function ) cfgObj.beforeSave();
+			var str = ..table.tostring(cfgObj);
+			writeFile(path,str);
+		}
+
+		return cfgObj;
+	};
+
+	return true;
+};

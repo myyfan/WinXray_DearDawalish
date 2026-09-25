@@ -109,15 +109,26 @@ var onInboundsUpdated = function(){
 
 	// 局域网 HTTP 代理地址（供局域网内其它设备使用）：
 	// 只有「允许来自局域网的连接」开启时，其它设备才能连上，故未开启时灰显。
-	import wsock.tcp.client;
-	var lanIp = ..wsock.tcp.client.getLocalIp("www.baidu.com");
-	winform.editLanHttpProxy.text = lanIp ? (lanIp ++ ":" ++ winform.editHttpPort.text) : "";
+	// 【UI 线程禁网】getLocalIp 内部是 DNS 查询（无超时控制），丢后台线程执行，结果回 UI。
+	uiNet.async(
+		function(){
+			import wsock.tcp.client;
+			return wsock.tcp.client.getLocalIp("www.baidu.com");
+		},
+		null,
+		winform,
+		function(lanIp){
+			winform.lanIpCache = lanIp;   // 缓存，供右键菜单使用（避免再次 DNS 查询）
+			winform.editLanHttpProxy.text = lanIp ? (lanIp ++ ":" ++ winform.editHttpPort.text) : "";
+		}
+	);
 	winform.editLanHttpProxy.disabled = !winform.chkLan.checked;
 }
 
 subscribe("config.core.changed",function(){
 	onInboundsUpdated();
-})  
+})
+  
 
 subscribe("xrayCore.restarted",function(socksProxyPort,httpProxPort){
 	onInboundsUpdated();
@@ -333,7 +344,8 @@ winform.editLanPacUrl.editBox.readonly = true;
 import win.clip;
 import wsock.tcp.client;
 winform.editSocksPort.editBox.enablePopMenu(function(){
-	var lanIp = wsock.tcp.client.getLocalIp("www.baidu.com");
+	// 【UI 线程禁网】不再在此做 DNS 查询，直接用后台异步取好的缓存值
+	var lanIp = winform.lanIpCache;
 	return {
 			{ "复制端口" + winform.editSocksPort.text;
 				function(id){ 
@@ -354,7 +366,8 @@ winform.editSocksPort.editBox.enablePopMenu(function(){
 } )
 
 winform.editHttpPort.editBox.enablePopMenu(function(){
-	var lanIp = wsock.tcp.client.getLocalIp("www.baidu.com");
+	// 【UI 线程禁网】不再在此做 DNS 查询，直接用后台异步取好的缓存值
+	var lanIp = winform.lanIpCache;
 	return {
 			{ "复制端口" + winform.editHttpPort.text;
 				function(id){ 

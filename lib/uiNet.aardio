@@ -1,0 +1,189 @@
+//uiNet —— UI 线程网络隔离 + 阻塞守卫
+/*
+【为什么需要】
+UI 线程一旦发生阻塞式网络调用（裸 socket 收发、DNS 解析、无超时的 connect），
+Windows 只会派发 sent 消息、不派发 posted 消息 —— 于是：
+  · 鼠标点击、窗口重绘、定时器 全部停摆（用户感觉“点不动”）；
+  · 但 CPU 是 0%、任务管理器不显示“未响应” → 极难排查。
+
+【三条铁律】
+1. UI 线程绝不直接做网络收发；一律走 uiNet.async 丢后台，结果回 UI。
+2. 任何 socket 调用必须带超时（裸 wsock.tcp.client 的 connect 没有超时，禁用）。
+3. 开发期开启守卫（cfg.watch），UI 线程上的网络调用会被记录耗时 + 调用栈。
+
+【为什么不用 thread.works / 线程池】
+实测：反复「建池 + 销毁」会持续泄漏内存（每池数 MB，永不归还）；
+      而「一线程一任务、跑完自然退出」零泄漏（实测净归还）。
+      且 thread.works 的任务会被序列化 —— 把窗体对象放进任务表会变成副本（代理失效、静默失败）。
+      → 因此本库用 thread.invoke：每任务新建线程、跑完自然退出；窗体作为【直接参数】传递。
+
+【安装】
+  import uiNet;
+  uiNet.install();                      // 尽早调用（UI 线程）
+  uiNet.startHeartbeat(mainForm);       // 窗体创建后启动阻塞心跳
+
+【用法】
+  uiNet.async(
+      function(){                       // 纯函数：可跨线程序列化，内部引用全局要加 ..
+          import inet.http;
+          return inet.http.isAlive(,false);
+      },
+      null,                             // 传给纯函数的参数（只能是可跨线程传递的值）
+      frmXray,                          // 回传目标窗体（作为线程函数的直接参数传递）
+      function(alive){                  // 回调：在 UI 线程执行，可自由使用 upvalue
+          if(alive) frmXray.autoUpdateSubscription(1000);
+      }
+  );
+*/
+
+namespace uiNet;
+
+import debug.log;
+import inet.http;
+import wsock.tcp.client;
+
+//===== 配置（外部可改：uiNet.cfg.xxx）=====
+var cfg = {
+	watch = true;      // 守卫总开关
+	threshold = 30;    // 超过该毫秒数才记录
+	verbose = true;    // 是否输出调用栈
+	heartbeat = 200;   // 心跳间隔(ms)
+};
+self.cfg = cfg;
+
+var uiTid = null;
+var installed = false;
+var hbId = null;
+var seq = 0;
+var pending = {};      // tag → UI 线程回调闭包（只在 UI 线程读写）
+
+//===== 基础工具 =====
+var say = function(...){
+	..debug.log.print(...);
+};
+
+var stackText = function(){
+	var ok,tb = call(..debug.traceback);
+	return (ok && ..type(tb) === "string") ? tb : "";
+};
+
+self.isUIThread = function(){
+	return uiTid && (..thread.getId() === uiTid);
+};
+
+//===== 包装静态函数：在 UI 线程调用时记录 耗时 + 调用栈 =====
+self.wrapFn = function(obj, key, tag){
+	if(!obj) return false;
+	var orig = obj[[key]];
+	if(..type(orig) !== "function") return false;
+
+	obj[key] = function(...){
+		// 非 UI 线程 / 守卫关闭 → 原样调用
+		if(!cfg.watch || !uiTid || (..thread.getId() !== uiTid)){
+			return orig(...);
+		}
+
+		var t0 = ..time.tick();
+		var r = { orig(...) };
+		var ms = ..time.tick() - t0;
+
+		if(ms >= cfg.threshold){
+			say("[UI-NET] " ++ tag ++ " 在 UI 线程耗时 " ++ ms ++ "ms");
+			if(cfg.verbose) say(stackText());
+		}
+
+		if(#r === 0) return;
+		if(#r === 1) return r[1];
+		return ..table.unpack(r,1,#r);
+	};
+	return true;
+};
+
+//===== 安装守卫 =====
+self.install = function(uiThreadId){
+	uiTid = uiThreadId ? uiThreadId : ..thread.getId();
+	if(installed) return true;
+	installed = true;
+
+	/*
+	只包装「函数型」API（安全、无副作用）。
+	构造函数型 API（wsock.tcp.client(...)、inet.http(...)）是 class，
+	替换会破坏静态成员与内部自引用；改由代码审查 + 迁移保证。
+	*/
+	self.wrapFn(..inet.http, "isAlive", "inet.http.isAlive");
+	self.wrapFn(..inet.http, "getLocalIp", "inet.http.getLocalIp");
+	self.wrapFn(..wsock.tcp.client, "getLocalIp", "wsock.tcp.client.getLocalIp");
+
+	say("[uiNet] UI 线程网络守卫已安装（tid=" ++ uiTid ++ "，阈值 " ++ cfg.threshold ++ "ms）");
+	return true;
+};
+
+//===== 心跳：监视 UI 线程被阻塞的时长 =====
+self.startHeartbeat = function(winform, interval){
+	if(!winform) return null;
+	if(hbId) winform.clearInterval(hbId);
+
+	interval = interval ? interval : cfg.heartbeat;
+	var last = ..time.tick();
+
+	hbId = winform.setInterval(function(){
+		var t = ..time.tick();
+		var gap = t - last - interval;
+		last = t;
+		if(cfg.watch && gap >= cfg.threshold){
+			say("[UI-FREEZE] UI 线程被阻塞约 " ++ gap ++ "ms");
+		}
+	}, interval);
+
+	return hbId;
+};
+
+//===== 结果回传入口（必须在 UI 线程安装；worker 用【点号】调用它）=====
+self.installCallback = function(target){
+	if(!target) return false;
+	target.onNetDone = function(tag, value){
+		var cb = pending[tag];
+		if(cb){
+			pending[tag] = null;
+			cb(value);
+		}
+	};
+	return true;
+};
+
+/*
+异步执行网络任务。
+@pureFn   必须是纯函数（跨线程序列化；内部引用全局须加 .. 前缀）
+@params   传给 pureFn 的参数
+@target   回传目标窗体（作为线程函数的【直接参数】传递，否则代理会失效）
+@callback UI 线程回调（闭包，可自由使用 upvalue）
+*/
+self.async = function(pureFn, params, target, callback){
+	if(!target) return false;
+
+	// 惰性安装回传入口（必须在 UI 线程）
+	if(!target.onNetDone) self.installCallback(target);
+
+	seq++;
+	var tag = "un" ++ seq;
+	pending[tag] = callback;
+
+	/*
+	一线程一任务：跑完自然退出（实测零泄漏）。
+	窗体与纯函数都作为【直接参数】传递 —— 放进表里会被序列化，代理与函数都会失效。
+	*/
+	..thread.invoke(
+		function(target, pureFn, params, tag){
+			var r = { pureFn(params) };
+			target.onNetDone(tag, r[1]);   // 必须点号调用（跨线程代理只拦截点号）
+		},
+		target, pureFn, params, tag
+	);
+	return true;
+};
+
+//===== 收尾 =====
+self.close = function(){
+	pending = {};
+	hbId = null;
+};

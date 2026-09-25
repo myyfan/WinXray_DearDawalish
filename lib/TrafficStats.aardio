@@ -1,8 +1,25 @@
-﻿
-
 //流量统计
+/*
+【UI 线程禁网改造 · 常驻采样线程】
+
+原实现：frmXray.trafficStats 的 2 秒定时器在【UI 线程】里直接调 TrafficStats.start() 去读 gRPC 统计，
+        每次都要「新建 socket → connect → h2 握手 → 2 次 RPC」；
+        而 wsock.tcp.client.connect 没有超时、readEx 有 3 秒接收超时 ——
+        一旦内核未就绪 / API 端口未监听 / 统计服务无响应，UI 线程就会被阻塞数秒；
+        此时 Windows 只派发 sent 消息、不派发 posted 消息
+        → 点击、重绘、定时器全部停摆（CPU 却是 0%，任务管理器也不显示“未响应”，极难排查）。
+
+现实现：采样搬到【常驻后台线程】，UI 定时器只读「已发布的结果」算增量，全程零 socket 调用。
+        · 常驻线程用「代际号 gen」优雅退出：需要换端口时 gen+1，旧线程下一轮自行 return；
+          绝不 terminate —— 实测被强杀的线程所持内存 100% 不归还。
+        · 采样线程每轮都发布心跳，UI 侧据此自愈（线程没了就重启）。
+        · 常驻线程实测内存零增长；反复「建池 + 销毁」才会持续泄漏。
+*/
 import xray.core;
 import config;
+import debug;
+import debug.log;
+import uiNet;
 
 namespace TrafficStats;
 coreType = "xray";
@@ -13,117 +30,235 @@ var inbounds = ..config.core.default[["inbounds"]];
 var apiPort = inbounds[3].port;
 //apiPort = 10084;
 
-import debug
-import debug.log
-//import debug.hook()
-import console
-//console.print( apiPort)
-//debug.debug()
-
 reset = function(){
 	import debug
 	import debug.log
-	//debug.log.print("reset函数启动")
 	if( prcsCmd ){ prcsCmd.terminate();prcsCmd = null; }
 	import xray.core;
 
 	port = '--server=127.0.0.1:'+apiPort;
-	//coreType = ..Core.XrayCore.coreType;
-	
+
 	getPath = function(){
 		import debug
-	import debug.log
-	debug.log.print("reset函数0")
-	var path = ..io.fullpath("/core/xray/xray.exe");
-	if(..io.exist(path)){
-		return path;
-	}
-	debug.log.print("reset函数1")
-	coreType = "xray";
-	corePath = getPath();
-	corePath = ..io.fullpath("/core/xray/xray.exe");
-	debug.log.print("corePath"+corePath);
+		import debug.log
+		var path = ..io.fullpath("/core/xray/xray.exe");
+		if(..io.exist(path)){
+			return path;
+		}
+		coreType = "xray";
+		corePath = getPath();
+		corePath = ..io.fullpath("/core/xray/xray.exe");
 	}
 }
 reset();
 
-start = function(){
-	import debug
-	import debug.log
-	//import config
-	//debug.log.print("流量监控启动")
-    //reset();
-    corePath = ..io.fullpath("/core/xray/xray.exe");
-    //debug.log.print("corePath路径:"+corePath);
-    if(!corePath || !coreType){ return }
-    //debug.log.print("流量监控1")
-					
+//==================== 采样线程 ↔ UI 线程的共享键 ====================
+var SAMPLE_KEY = "TrafficStats.sample";   //采样线程发布：{seq,down,up,tick}
+var GEN_KEY = "TrafficStats.gen";         //代际号：+1 即让旧采样线程优雅退出
+var PORT_KEY = "TrafficStats.port";       //采样线程当前使用的 API 端口
+
+var samplerGen = 0;
+
+//UI 侧已消费游标（只存两个数值，不存节点数据）
+var lastSeq,lastDown,lastUp = 0,0,0;
+
+//==================== 常驻采样线程（纯函数）====================
+/*
+【为什么必须是纯函数】它会被序列化到新线程执行：
+· 不能引用外部 upvalue（模块级 var / 局部变量 / 闭包）；
+· 端口、间隔、键名全部通过参数传入；
+· 线程内引用库用 .. 前缀（已实测 ..xray.grpc 在新线程内解析正常）。
+*/
+var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
+
+	import xray.grpc;
+
+	var totalDown,totalUp = 0,0;
+	var seq = 0;
+
+	while( true ){
+
+		//代际号变了 → 优雅退出（自然 return，线程自行结束；绝不 terminate）
+		if( ..thread.get(genKey) !== gen ){ break; }
+
+		var down,up = 0,0;
+
+		var client = ..xray.grpc.create("127.0.0.1", port, 3000);
+		var d = ..xray.grpc.readStat(client, "outbound>>>proxy>>>traffic>>>downlink", true);
+		var u = ..xray.grpc.readStat(client, "outbound>>>proxy>>>traffic>>>uplink", true);
+
+		if( type(d) === "number" ){ down = d; }
+		if( type(u) === "number" ){ up = u; }
+
+		totalDown += down;
+		totalUp += up;
+		seq++;
+
+		//每轮都发布（UI 侧同时用 tick 判断采样线程是否还活着）
+		..thread.set(sampleKey, {
+			seq = seq;
+			down = totalDown;
+			up = totalUp;
+			tick = ..time.tick();
+		});
+
+		sleep(intervalMs);
+	}
+
+	return true;
+};
+
+//==================== UI 侧接口（全部零网络调用）====================
+
+//当前 API 端口：每次现读配置（端口会漂移，绝不能用模块加载时缓存的旧值）
+var currentApiPort = function(){
+	var p = ..config.core.default[["inbounds"]][3][["port"]];
+	if(p){ return p; }
+	return apiPort;
+};
+
+//采样线程是否活着：看它发布的心跳新鲜度
+samplerAlive = function(){
+	var s = ..thread.get(SAMPLE_KEY);
+	if(!s){ return false; }
+	return (..time.tick() - s.tick) < 8000;
+};
+
+/*
+启动 / 复用常驻采样线程（幂等）。
+· 同一端口且心跳新鲜 → 直接复用现有线程；
+· 否则代际号 +1，让旧线程下一轮自行退出（优雅退出，绝不 terminate）。
+*/
+startSampler = function(intervalMs){
+	var port = currentApiPort();
+	if(!port){ return false; }
+
+	if( samplerAlive() && (..thread.get(PORT_KEY) === port) ){
+		return true;
+	}
+
+	if(!intervalMs){ intervalMs = 2000; }
+
+	samplerGen++;
+	..thread.set(GEN_KEY, samplerGen);
+	..thread.set(PORT_KEY, port);
+	..thread.set(SAMPLE_KEY, null);
+
+	lastSeq,lastDown,lastUp = 0,0,0;   //新线程的累计量从 0 开始 → 重置游标
+
+	//常驻线程：跑循环自行退出（实测常驻线程内存零增长；反复建销线程池才会泄漏）
+	..thread.invoke(samplerWorker, port, intervalMs, samplerGen, SAMPLE_KEY, GEN_KEY);
+
+	..debug.log.print("[TrafficStats] 常驻采样线程已启动（API 端口 " ++ port ++ "，间隔 " ++ intervalMs ++ "ms）");
+	return true;
+};
+
+/*
+取「本次增量」：读后台线程发布的累计量，减去上次已消费的量。
+没有新样本返回 null（调用方用 if(downValue) 判断即可，与旧行为一致）。
+*/
+takeSample = function(){
+	var s = ..thread.get(SAMPLE_KEY);
+	if(!s){ return null; }
+	if(s.seq === lastSeq){ return null; }
+
+	var dDown = s.down - lastDown;
+	var dUp = s.up - lastUp;
+
+	lastSeq = s.seq;
+	lastDown = s.down;
+	lastUp = s.up;
+
+	//采样线程换代后累计量归零 → 增量可能为负，夹紧为 0
+	if(dDown < 0){ dDown = 0; }
+	if(dUp < 0){ dUp = 0; }
+
+	return dDown,dUp;
+};
+
+/*
+兼容旧调用名 start()：旧代码用它「重置流量统计」（忽略返回值）。
+现在语义 = 重置游标 + 确保采样线程在跑，【不做任何网络调用】。
+*/
+start = function(intervalMs){
+	lastSeq,lastDown,lastUp = 0,0,0;
+	startSampler(intervalMs);
+	return true;
+};
+
+//==================== 同步读取（仅限后台线程；UI 线程调用会被拒绝）====================
+readOnce = function(){
+	if( ..uiNet.isUIThread() ){
+		..debug.log.print("[TrafficStats] 拒绝在 UI 线程执行同步网络读取（请改用 startSampler / takeSample）");
+		return 0,0;
+	}
+
+	if(!corePath || !coreType){ return }
+
 	if(coreType=="xray"){
 		//【性能】改为纯 gRPC 直连读取统计（xray.app.stats.command.StatsService/GetStats）。
 		//
 		//原来这里是 process.popen(corePath,"api","statsquery",...)：
 		//每次都要「启动一个新的 xray.exe 进程 → 连 API → 读输出 → 退出」，
-		//实测单次 500~610 毫秒；而它被 2 秒一次的流量统计定时器调用
-		//（forms/main/xray.aardio 的 frmXray.trafficStats，apiTime=2000）
-		//→ 界面线程每 2 秒被占住半秒以上，这是主界面卡顿的主要来源。
+		//实测单次 500~610 毫秒。
 		//
 		//gRPC 直连（lib/xray/grpc.aardio，纯 aardio 实现 h2c + gRPC + protobuf）：
-		//实测「建连 + 读下行 + 读上行」共约 12 毫秒，比进程方案快约 50 倍，
-		//也不再需要 win.invoke 额外创建一个界面线程（线程创建本身还要约 40ms）。
+		//实测「建连 + 读下行 + 读上行」共约 12 毫秒，比进程方案快约 50 倍。
 		//
 		//reset 参数与原来的 "-reset" 等价：读取后清零，返回的是「本周期增量」。
 		import xray.grpc;
 
-		var client = ..xray.grpc.create("127.0.0.1",apiPort,3000);
+		var client = ..xray.grpc.create("127.0.0.1",currentApiPort(),3000);
 
 		var down = ..xray.grpc.readStat(client,"outbound>>>proxy>>>traffic>>>downlink",true);
 		var up = ..xray.grpc.readStat(client,"outbound>>>proxy>>>traffic>>>uplink",true);
 
-		//读取失败（内核未就绪 / API 端口未监听）时返回 0：
-		//调用方用 if(downValue) 判断，0 表示「本周期无增量」，不会误加流量，也不会中断定时器。
 		if(down === null) down = 0;
 		if(up === null) up = 0;
 
 		return down,up;
 	}
 	elseif(coreType=="v2ray"){
-				debug.log.print("流量监控3")
 		corePath = ..io.joinpath(..io.splitpath(corePath).dir,"v2ctl.exe");
 		var downTraffic = ..win.invoke(
 			function(corePath,apiPort){
 				import process.popen;
 				import web.json;
-				var cmdText = '"outbound>>>proxy-out>>>traffic>>>downlink"';
-				
+				var cmdText = '\"outbound>>>proxy-out>>>traffic>>>downlink\"';
+
 				var json ;
-				var i = 3 ; 
+				var i = 3 ;
 				do {
-					prcsCmd = ..process.popen(corePath,corePath,"api",apiPort,"StatsService.GetStats",'"name:'+cmdText+'reset:true"');
-					var json = string.replace(string.replace(prcsCmd.read(-1),"\<",'\{'),"\>\s*$",'\}');
+					prcsCmd = ..process.popen(corePath,corePath,"api",apiPort,"StatsService.GetStats",'\"name:'+cmdText+'reset:true\"');
+					var json = string.replace(string.replace(prcsCmd.read(-1),"\\<\\",'\\{'),"\\>\\s*$",'\\}');
 					i--;
 				}while( !json && i > 0)
 				var table = ..web.json.tryParse(json);
 				var value = (json && json.stat.value) ? json.stat.value : false;
-				return value; 
+				return value;
 			}
 		)
 		var upTraffic = ..win.invoke(
 			function(corePath,apiPort){
 				import process.popen;
 				import web.json;
-				var cmdText = '"outbound>>>proxy-out>>>traffic>>>uplink"';
-				prcsCmd = ..process.popen(corePath,corePath,"api",apiPort,"StatsService.GetStats",'"name:'+cmdText+'reset:true"');
-				var json = string.replace(string.replace(prcsCmd.read(-1),"\<",'\{'),"\>$",'\}');
+				var cmdText = '\"outbound>>>proxy-out>>>traffic>>>uplink\"';
+				prcsCmd = ..process.popen(corePath,corePath,"api",apiPort,"StatsService.GetStats",'\"name:'+cmdText+'reset:true\"');
+				var json = string.replace(string.replace(prcsCmd.read(-1),"\\<\\",'\\{'),"\\>$",'\\}');
 				var table = ..web.json.tryParse(json);
 				var value = (json && json.stat) ? json.stat.value : false;
-				return value; 
-			} 
+				return value;
+			}
 		)
 		return downTraffic,upTraffic;
 	}
-}
+};
 
 /**intellisense(TrafficStats)
 reset = 重置
-start = 开始流量统计
+start = 兼容旧接口：重置流量统计并确保采样线程在跑（不做网络调用）
+startSampler = 启动/复用常驻采样线程（UI 线程调用，零网络调用）
+takeSample = 取本次流量增量（UI 线程调用，零网络调用），无新样本返回 null
+samplerAlive = 常驻采样线程是否存活（心跳新鲜度）
+readOnce = 同步读取流量（仅限后台线程；UI 线程调用会被拒绝）
 end intellisense**/

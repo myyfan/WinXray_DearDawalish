@@ -70,6 +70,51 @@ xray.logPanel.attach(frmXray.edit,40,10000);
 frmXray.listview.viewCache = {};    // 视图缓存：viewCache[行][列]
 frmXray.listview.viewSilent = null; // 为 true 时写入不触发重绘（批量填充用）
 
+/*
+只失效「该行」的矩形，而不是整个虚表。
+
+【为什么必须这样】
+虚表的 onGetDispItem 回调是「按需索取」的：失效区域越大，Windows 索取的单元格越多。
+实测（12453 行 / 12 列 / 本机 geforce 环境，20 次取平均）：
+
+	InvalidateRect(hwnd, null)     → 510 次回调 / 437 ms   ← 每次都要 0.4 秒
+	InvalidateRect(hwnd, 单行矩形)  →  17 次回调 /  15.6 ms  ← 快 28 倍
+	（不可见行的矩形在客户区外，被自动裁掉 → 0 次回调、0 ms）
+
+流量统计定时器每 2 秒会调用 4 次 setItemText（第 8/9/10/11/12 列），
+原来每次都失效整表 → 每 2 秒一次 300~700ms 的卡顿 —— 这就是日志里刷屏的 [UI-FREEZE]。
+
+【为什么不是「只失效被修改的那一格」】
+虚表（LVS_OWNERDATA）不支持 LVM_GETSUBITEMRECT —— 实测 12 个子项里 9 个返回 0，
+因此拿不到单个单元格的矩形。而且整行失效已经几乎没有成本（15.6ms，一帧的量级），
+再细分成单格只能再省约 11ms，不值得为此引入自算列宽的脆弱逻辑。
+
+【LVM_GETITEMRECT = 0x100E】
+	wParam = 行索引（0 基）；lParam = RECT 指针，其 left 成员作为输入指定 LVIR_* 类型，
+	LVIR_BOUNDS(0) = 整个项的包围矩形（跨所有列）。返回 0 表示失败（则退回整表失效）。
+	对不可见行同样能正确返回矩形（y 为数千像素，位于客户区外）。
+*/
+frmXray.listview.invalidateRow = function(row){
+	if(!row || row<1) return false;
+
+	/*
+	超出虚表行数时不必重绘：这种写入来自「已过期/已删除的行索引」，
+	该行本来就不会被绘制；等下次 setTable 会整表刷新，缓存里的值不会丢。
+	如果漏掉这一句，LVM_GETITEMRECT 会返回 0 → 退化成一整表重绘（0.4 秒），
+	正好把这里想避免的开销又请回来了。
+	*/
+	var n = owner.count;
+	if(n && row > n) return true;
+
+	var rc = {int left=0;int top=0;int right=0;int bottom=0};
+	if( ::User32.SendMessageW(owner.hwnd,0x100E/*LVM_GETITEMRECT*/,row-1,rc) ){
+		::User32.InvalidateRect(owner.hwnd,rc,false);
+		return true;
+	}
+	::User32.InvalidateRect(owner.hwnd,null,false); //拿不到矩形则退回整表，宁可慢也不出错
+	return false;
+};
+
 frmXray.listview.onGetDispItem = function(item,row,col){
 	var r = owner.viewCache[row];
 	if(r) return {text = r[col]};
@@ -81,7 +126,7 @@ frmXray.listview.setItemText = function(text,row,col){
 	var r = owner.viewCache[row];
 	if(!r){ r = {}; owner.viewCache[row] = r; }
 	r[col] = text;
-	if(!owner.viewSilent) ::User32.InvalidateRect(owner.hwnd,null,false);
+	if(!owner.viewSilent) owner.invalidateRow(row);
 	return true;
 };
 

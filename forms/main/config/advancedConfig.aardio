@@ -10,11 +10,11 @@ chkLan={cls="plus";text="允许来自局域网的连接";left=276;top=397;right=
 chkSystemStart={cls="plus";text="允许开机启动 WinXray";left=276;top=476;right=792;bottom=507;align="left";bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-16);iconStyle={align="left";font=LOGFONT(h=-16;name='FontAwesome')};iconText='\uF0C8';notify=1;textPadding={left=19};z=17};
 editApiPort={cls="plus";left=456;top=127;right=509;bottom=151;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=33};
 editHttpPort={cls="plus";left=262;top=126;right=315;bottom=150;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=14};
+editLanHttpProxy={cls="plus";left=282;top=282;right=698;bottom=306;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=34};
 editLanPacUrl={cls="plus";left=280;top=357;right=699;bottom=381;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=11};
 editPacPort={cls="plus";left=680;top=94;right=760;bottom=118;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=2};
 editPacUrl={cls="plus";left=278;top=318;right=697;bottom=342;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=8};
 editSearcherHttpPort={cls="plus";left=749;top=126;right=802;bottom=150;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=36};
-editLanHttpProxy={cls="plus";left=282;top=282;right=698;bottom=306;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);textPadding={bottom=1};z=34};
 editSocksPort={cls="plus";left=263;top=91;right=317;bottom=115;align="left";bgcolor=0xFFFFFF;border={bottom=1;color=0x808080};db=1;dl=1;editable="edit";font=LOGFONT(h=-16);notify=1;textPadding={bottom=1};z=3};
 hotkey={cls="hotkey";left=227;top=249;right=367;bottom=269;clip=1;db=1;dl=1;edge=1;z=26};
 lbMaxTestServers={cls="static";text="100";left=564;top=39;right=880;bottom=65;bgcolor=0xFFFFFF;db=1;dl=1;font=LOGFONT(h=-13);transparent=1;z=25};
@@ -421,7 +421,7 @@ winform.tbTestInterval.onPosChanged = function( pos,thumbTrack ){
 	winform.lbTestInterval.text = pos+"秒";
 	config.proxy.testInterval = pos;
 	..frmXray.AutoTest();
-	config.proxy.save();
+//	config.proxy.save();
 }
 
 winform.tbMaxTestServers.setTrackbarRange(10,300);
@@ -439,7 +439,7 @@ winform.tbMaxTestServers.onPosChanged = function( pos,thumbTrack ){
 	}
 	
 	config.proxy.maxTestServers = pos;
-	config.proxy.save();
+//	config.proxy.save();
 }
 
 winform.tbSearchBatchSize.setTrackbarRange(1,50);
@@ -509,9 +509,6 @@ winform.btnOpenFirewall.oncommand = function(id,event){
 	process.control("firewall.cpl")	
 }
 
-winform.tbTestInterval.oncommand = function(id,event){
-	
-}
 
 
 winform.show();

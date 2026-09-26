@@ -204,6 +204,7 @@ var h2Call = function(conn, sid, path, authority, reqBody){
 
 	var dataOut = "";
 	var gotData = false;
+	var gotEnd = false;   //是否收到「流结束」标记（END_STREAM）——连接复用时用它判断本次调用是否正常完成
 
 	var k = 0;
 	while(k < 500){
@@ -230,9 +231,16 @@ var h2Call = function(conn, sid, path, authority, reqBody){
 		}
 		elseif(ftyp == 7){ break; }   // GOAWAY
 
-		if((ftyp == 0 || ftyp == 1) && (flags & 1) && fsid == sid){ break; }
+		if((ftyp == 0 || ftyp == 1) && (flags & 1) && fsid == sid){ gotEnd = true; break; }
 	}
 
+	/*
+	【必须先判 gotEnd】复用连接后，如果连接在读到一半时中断（服务端关闭 / 超时），
+	gotData 可能已为 true 但数据不完整 —— 直接拿去解析会得到「看起来正常但值是错的」结果。
+	只有「收到流结束标记」才算一次成功的调用。
+	（gRPC 的 trailers-only 错误响应也会带 END_STREAM，所以它不会被误判为连接中断）
+	*/
+	if(!gotEnd){ return null, "gRPC 响应未正常结束（连接中断、超时或流被重置）"; }
 	if(!gotData){ return null, "gRPC 调用失败（服务端返回 trailers-only，方法可能未启用或请求非法）"; }
 	if(#dataOut < 5){ return null, "gRPC 响应过短"; }
 	//空消息体（如 QueryStats 无数据）长度为 5，此时 slice 会返回 null，必须显式返回空串
@@ -250,20 +258,66 @@ create = function(host, port, timeoutMs){
 
 	var authority = host ++ ":" ++ port;
 
+	/*
+	【连接复用 · 2026-09-26】
+	原来每次 call 都是「新建连接 → h2 握手 → 用完即关」：本机回环约 4~5ms/次，
+	而且内核每接受一条连接都会记一条访问日志（这是日志面板被 [api -> api] 刷屏的来源）。
+
+	改为「懒建 + 常驻复用」：
+	· 首次 call 建立连接，之后在同一连接上用【递增的 stream id】多路复用；
+	· HTTP/2 规定客户端 stream id 必须是奇数且严格递增（不可重用）——
+	  原来硬编码 sid=1，导致第二个请求必然撞车，所以必须先解决这个问题才能复用；
+	· 调用失败（连接被服务端关闭 / 超时 / 读到一半中断）→ 关闭连接，
+	  并用新连接重试一次，调用方无感（失败基本都发生在「请求尚未到达服务端」时）。
+	· 对象内部含 socket 与 stream 序号，【不可跨线程共享】；每个线程各自 create 一个。
+	*/
+	var conn = null;
+	var nextSid = 1;
+
+	var closeConn = function(){
+		if(conn){ conn.close(); conn = null; }
+	};
+
 	return {
 		host = host;
 		port = port;
 
 		call = function(path, reqBody){
-			var conn, e = openConn(host, port, timeoutMs);
-			if(!conn){ return null, e; }
-			var resp, err = h2Call(conn, 1, path, authority, reqBody);
-			conn.close();
-			return resp, err;
+			var lastErr;
+
+			//最多两轮：第一轮可能因「连接已被服务端关闭」而失败，第二轮用新连接重试
+			for(round=1;2;1){
+
+				if(!conn){
+					var c, e = openConn(host, port, timeoutMs);
+					if(!c){ return null, e; }
+					conn = c;
+					nextSid = 1;
+				}
+
+				var sid = nextSid;
+				nextSid += 2;      //HTTP/2：客户端 stream id 必为奇数且严格递增
+
+				if(nextSid > 0x7FFFFFF0){
+					//stream id 接近上限（2^31-1）→ 下次调用换新连接，避免溢出
+					closeConn();
+				}
+
+				var resp, err = h2Call(conn, sid, path, authority, reqBody);
+				if(resp !== null){ return resp; }
+
+				//失败：连接状态可能已混乱（有未读完的帧）→ 必须丢弃，不能继续复用
+				closeConn();
+				lastErr = err;
+
+				if(round == 2){ break; }
+			}
+
+			return null, lastErr;
 		};
 
 		close = function(){
-			//每次调用独立连接，无需保留状态
+			closeConn();
 		};
 	};
 };
@@ -277,10 +331,22 @@ removeOutbound = function(client, tag){
 	return true;
 };
 
-//查询统计（支持前缀模式匹配）
-//返回: { {name="...";value=123}, ... }
-queryStats = function(client, pattern){
+//查询统计（支持前缀模式匹配，一次可返回多个计数器）
+/*
+与 GetStats（单个计数器）的区别：
+	一次查询就能把「前缀匹配到的所有统计项」都要回来 —— 例如
+	queryStats(client,"outbound>>>proxy>>>traffic>>>",true)
+	一次即可拿回 uplink + downlink 两项，不必再调两次 GetStats。
+
+reset 与 GetStats 的 reset 语义一致（读取后清零，返回本周期增量）。
+proto: QueryStatsRequest{ string pattern = 1; bool reset = 2; }
+	（Xray CLI 的 `xray api statsquery -reset` 就是这个接口。）
+
+返回: { {name="...";value=123}, ... }；失败返回 null,错误信息
+*/
+queryStats = function(client, pattern, reset){
 	var req = pattern ? pbStr(1, pattern) : "";
+	if(reset){ req ++= pbInt(2, 1); }
 	var resp, err = client.call("/xray.app.stats.command.StatsService/QueryStats", req);
 	if(resp === null){ return null, err; }
 	var out = {};

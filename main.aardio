@@ -238,23 +238,12 @@ import win.dlg.message;
 win.dlg.message.install();
 
 /*
-【UI 卡顿归因 · 心跳】
-每 200ms 自检一次：UI 线程被阻塞超过阈值就写 dbg$.log ——
-    [UI-FREEZE] UI 线程被阻塞约 XXXms
-配合本文件顶部的 uiNet 守卫（记录 UI 线程上的网络调用 + 调用栈），
-以后任何「点不动」都能从日志直接读出阻塞时长，不必再靠外部取证。
-注意：saveAsync 保存大配置时会【有意丢弃 WM_TIMER】以阻断定时器重入，
-      所以保存期间的心跳会滞后 → 那里出现的 [UI-FREEZE] 属已知误报
-      （可用同时刻的 [保存] 日志区分）。
-*/
-/*
-探针阈值：
-  threshold   网络守卫：UI 线程上的网络调用超过该毫秒数即记录（[UI-NET]）
-  hbThreshold 心跳：UI 线程停顿超过该毫秒数即记录（[UI-FREEZE]，附 CPU 占用与「最后进入的阶段」）
+UI 线程网络守卫阈值（uiNet）：
+  threshold —— UI 线程上的网络调用超过该毫秒数即记录（[UI-NET] + 调用栈）
+历史上用于定位卡顿的「心跳 / 阶段标记 / 消息观察者」探针已按要求移除，
+本库只保留「网络隔离 + 守卫」两项基础设施。
 */
 uiNet.cfg.threshold = 250;
-uiNet.cfg.hbThreshold = 250;
-uiNet.startHeartbeat(mainForm);
 
 //配置高级选项卡
 import win.ui.tabs;
@@ -529,10 +518,4 @@ subscribe("uiCommand.HotkeyChanged",function(...){
 } )
 publish("uiCommand.HotkeyChanged");
 
-/*
-消息探针：aardio 的 win.loopMessage(observer) 会在【每条消息分发之前】调用 observer，
-因此「相邻两次 observer 的间隔」= 上一条消息的处理耗时 —— 于是每条 Windows 消息
-都能自己报出耗时（写在 dbg$.log 的 [UI-FREEZE] 行尾的「慢消息」字段里）。
-observer 返回 null 表示继续正常处理，不改变任何行为。
-*/
-return win.loopMessage(uiNet.msgObserver);
+return win.loopMessage();

@@ -116,7 +116,6 @@ frmXray.listview.invalidateRow = function(row){
 };
 
 frmXray.listview.onGetDispItem = function(item,row,col){
-	uiNet.mark("listRepaint");
 	var r = owner.viewCache[row];
 	if(r) return {text = r[col]};
 };
@@ -132,7 +131,6 @@ frmXray.listview.setItemText = function(text,row,col){
 };
 
 frmXray.listview.setTable = function(dataTable){
-	uiNet.mark("listSetTable");
 	if(!dataTable) return owner.clear();
 
 	var fields = dataTable.fields;
@@ -202,7 +200,6 @@ var sdLog = function(...){
 	debug.log.print(...);
 };
 var saveTimerId = frmXray.setInterval( 600000,function(){//定时5分钟保存proxy数据
-		uiNet.mark("saveTimer");
 		//debug.log.print("proxy save")
 		config.proxy.save()	
 	}
@@ -224,7 +221,6 @@ var activeOutbound
 				frmXray.clearInterval(testTimerId);	//删除定时器
 			}	
 			testTimerId = frmXray.setInterval( config.proxy.testInterval*1000,function(){
-					uiNet.mark("testTimer");
 					if(frmXray.btnTcping.disabled) return;//正在寻找服务器就返回
 					if( frmXray.autoTesting ) return; //如果是自动测试就退出
 					activeOutbound(outboundIndex,outboundAddress,true,false);//定时检测代理状态
@@ -1292,7 +1288,6 @@ frmXray.onTcpingFailed = function(){
 				if(retryOnNetworkAliveTimerId) frmXray.clearInterval(retryOnNetworkAliveTimerId);
 				retryOnNetworkAliveTimerId = frmXray.setInterval( 
 					function(){ 
-						uiNet.mark("netAliveTimer");
 						// 如果有激活了的服务器，那么retryOnNetworkAliveTimerId设为空，
 						// 并返回0，表示不再执行定时器函数
 						if(frmXray.listview.activeOutboundIndex){
@@ -2888,7 +2883,6 @@ frmXray.AutoTest = function(id,event){
 	//设置异常检查定时器,定时检测代理是否正常
 	testTimerId = frmXray.setInterval( 
 			autoTestTime*1000,function(){
-				uiNet.mark("autoTestTimer");
 				import debug
 			//	debug.log.print("定时器被调用2：",testTimerId);
 
@@ -3028,7 +3022,6 @@ setSearcherTimer = function(){
 	if(..searcherTimerID) frmXray.clearInterval(..searcherTimerID);
 	..searcherTimerID = frmXray.setInterval( 
 				1000,function(){
-					uiNet.mark("searcherTimer");
 					//import config;
 					//config.proxy.save();
 				//	debug.log.print("frmXray.chkSearchMode.oncommand() is running.")
@@ -3114,7 +3107,6 @@ frmXray.startCertPinFetch = function(){
 	};
 
 frmXray.runCertPinBatch = function(){
-		uiNet.mark("certPinBatch");
 
 		/*
 		★ 常驻 worker 池：12 个线程只创建一次，之后每批只 pushAsync 任务。
@@ -3152,7 +3144,6 @@ frmXray.runCertPinBatch = function(){
 	};
 
 	frmXray.pollCertPin = function(){
-		uiNet.mark("pollCertPin");
 		var allDone = true;
 		for(t=1,frmXray.certPinTaskCount,1){
 			var st = ..thread.get("certPinDone_" + t);
@@ -4350,7 +4341,6 @@ frmXray.trafficStats = function(){
 
 	trafficTimerId = frmXray.setInterval( 
 		function(){
-			uiNet.mark("trafficTimer");
 
 			import debug
 			import debug.log

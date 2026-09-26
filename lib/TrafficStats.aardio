@@ -76,6 +76,12 @@ var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
 	var totalDown,totalUp = 0,0;
 	var seq = 0;
 
+	/*
+	常驻客户端（连接复用）：内部持有一条常驻连接，下面每轮的调用都复用它，
+	不再「每轮新建连接」。本线程自己 create、自己用（socket 对象不可跨线程共享）。
+	*/
+	var client = ..xray.grpc.create("127.0.0.1", port, 3000);
+
 	while( true ){
 
 		//代际号变了 → 优雅退出（自然 return，线程自行结束；绝不 terminate）
@@ -83,12 +89,23 @@ var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
 
 		var down,up = 0,0;
 
-		var client = ..xray.grpc.create("127.0.0.1", port, 3000);
-		var d = ..xray.grpc.readStat(client, "outbound>>>proxy>>>traffic>>>downlink", true);
-		var u = ..xray.grpc.readStat(client, "outbound>>>proxy>>>traffic>>>uplink", true);
+		/*
+		【一次查询同时拿回上行 + 下行】
+		原来用 GetStats（单计数器接口）读两次 —— 两条连接、两次 RPC。
+		改用 QueryStats（支持前缀匹配）一次即可返回该前缀下的所有计数器：
+			{ {name="outbound>>>proxy>>>traffic>>>downlink"; value=...},
+			  {name="outbound>>>proxy>>>traffic>>>uplink";  value=...} }
+		reset=true 的语义与 GetStats 的 reset 相同（读取后清零，返回本周期增量）。
+		*/
+		var arr = ..xray.grpc.queryStats(client, "outbound>>>proxy>>>traffic>>>", true);
 
-		if( type(d) === "number" ){ down = d; }
-		if( type(u) === "number" ){ up = u; }
+		if( arr ){
+			for(i=1;#arr;1){
+				var st = arr[i];
+				if( st.name == "outbound>>>proxy>>>traffic>>>downlink" ){ down = st.value; }
+				elseif( st.name == "outbound>>>proxy>>>traffic>>>uplink" ){ up = st.value; }
+			}
+		}
 
 		totalDown += down;
 		totalUp += up;
@@ -105,6 +122,7 @@ var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
 		sleep(intervalMs);
 	}
 
+	client.close();   //线程退出时关闭常驻连接
 	return true;
 };
 
@@ -210,11 +228,17 @@ readOnce = function(){
 
 		var client = ..xray.grpc.create("127.0.0.1",currentApiPort(),3000);
 
-		var down = ..xray.grpc.readStat(client,"outbound>>>proxy>>>traffic>>>downlink",true);
-		var up = ..xray.grpc.readStat(client,"outbound>>>proxy>>>traffic>>>uplink",true);
-
-		if(down === null) down = 0;
-		if(up === null) up = 0;
+		//一次查询同时拿回上行 + 下行（QueryStats 前缀匹配 + reset）
+		var down,up = 0,0;
+		var arr = ..xray.grpc.queryStats(client,"outbound>>>proxy>>>traffic>>>",true);
+		if(arr){
+			for(i=1;#arr;1){
+				var st = arr[i];
+				if(st.name == "outbound>>>proxy>>>traffic>>>downlink"){ down = st.value; }
+				elseif(st.name == "outbound>>>proxy>>>traffic>>>uplink"){ up = st.value; }
+			}
+		}
+		client.close();
 
 		return down,up;
 	}

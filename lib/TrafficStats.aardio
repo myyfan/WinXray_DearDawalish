@@ -60,7 +60,8 @@ var PORT_KEY = "TrafficStats.port";       //采样线程当前使用的 API 端�
 var samplerGen = 0;
 
 //UI 侧已消费游标（只存两个数值，不存节点数据）
-var lastSeq,lastDown,lastUp = 0,0,0;
+var lastSeq,lastDown,lastUp,lastTick = 0,0,0,0;
+var samplerIntervalMs = 2000;   //采样线程的采样周期（takeSample 的兜底值）
 
 //==================== 常驻采样线程（纯函数）====================
 /*
@@ -156,13 +157,14 @@ startSampler = function(intervalMs){
 	}
 
 	if(!intervalMs){ intervalMs = 2000; }
+	samplerIntervalMs = intervalMs;
 
 	samplerGen++;
 	..thread.set(GEN_KEY, samplerGen);
 	..thread.set(PORT_KEY, port);
 	..thread.set(SAMPLE_KEY, null);
 
-	lastSeq,lastDown,lastUp = 0,0,0;   //新线程的累计量从 0 开始 → 重置游标
+	lastSeq,lastDown,lastUp,lastTick = 0,0,0,0;   //新线程的累计量从 0 开始 → 重置游标
 
 	//常驻线程：跑循环自行退出（实测常驻线程内存零增长；反复建销线程池才会泄漏）
 	..thread.invoke(samplerWorker, port, intervalMs, samplerGen, SAMPLE_KEY, GEN_KEY);
@@ -183,15 +185,27 @@ takeSample = function(){
 	var dDown = s.down - lastDown;
 	var dUp = s.up - lastUp;
 
+	/*
+	【时间跨度 elapsedMs 必须取「样本发布时的时间戳」，不能用 UI 定时器的名义间隔】
+	增量与时间跨度必须来自同一段真实时间，速度才算得对。
+	UI 定时器会因界面繁忙、saveAsync 有意丢弃 WM_TIMER 等原因延迟数秒 ——
+	那时增量其实覆盖了更长的时间；若仍按固定的 2 秒去换算，速度就会虚高数倍
+	（例：延迟 7 秒才取样 → 增量是 7 秒的量，按 2 秒算 ⇒ 速度虚高 3.5 倍）。
+	*/
+	var elapsedMs = lastTick ? (s.tick - lastTick) : samplerIntervalMs;
+
 	lastSeq = s.seq;
 	lastDown = s.down;
 	lastUp = s.up;
+	lastTick = s.tick;
 
 	//采样线程换代后累计量归零 → 增量可能为负，夹紧为 0
 	if(dDown < 0){ dDown = 0; }
 	if(dUp < 0){ dUp = 0; }
+	if(!elapsedMs || elapsedMs <= 0){ elapsedMs = samplerIntervalMs; }
 
-	return dDown,dUp;
+	//返回：下行增量、上行增量、【本次样本实际覆盖的毫秒数】
+	return dDown,dUp,elapsedMs;
 };
 
 /*
@@ -199,7 +213,7 @@ takeSample = function(){
 现在语义 = 重置游标 + 确保采样线程在跑，【不做任何网络调用】。
 */
 start = function(intervalMs){
-	lastSeq,lastDown,lastUp = 0,0,0;
+	lastSeq,lastDown,lastUp,lastTick = 0,0,0,0;
 	startSampler(intervalMs);
 	return true;
 };

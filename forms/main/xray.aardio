@@ -15,7 +15,7 @@ btnEditPacOrUwp={cls="plus";text="编辑PAC";left=308;top=361;right=414;bottom=3
 btnImportServerFromClipBd={cls="plus";text="批量导入链接";left=308;top=382;right=441;bottom=399;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF196 ';notify=1;textPadding={left=30};z=8};
 btnTcping={cls="plus";text="检测并连接最快服务器";left=674;top=366;right=868;bottom=398;align="left";bgcolor=0xB0B28F;border={radius=4};db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=18}};iconText='\uF012';notify=1;textPadding={left=42};z=3};
 chkAutoTest={cls="plus";text="异常自动重连 ";left=432;top=387;right=557;bottom=401;align="left";db=1;dr=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=12}};iconText='\uF0C8';notify=1;textPadding={left=30};z=9};
-chkFollowSearch={cls="checkbox";text="跟踪搜索进度";left=547;top=402;right=644;bottom=416;z=12};
+chkFollowSearch={cls="checkbox";text="跟踪搜索进度";left=548;top=402;right=645;bottom=416;z=12};
 chkJustValid={cls="checkbox";text="仅连接已测通";left=434;top=381;right=527;bottom=395;z=13};
 chkSearchMode={cls="checkbox";text="开启后台搜索";left=548;top=380;right=643;bottom=394;z=11};
 edit={cls="richedit";left=7;top=404;right=954;bottom=584;autohscroll=false;bgcolor=0x000000;color=0xFFFFFF;db=1;dl=1;dr=1;edge=1;multiline=1;readonly=1;vscroll=1;z=2};
@@ -4293,7 +4293,7 @@ frmXray.trafficStats = function(){
 	//var apiTime = config.settings.apiTime;
 	apiTime = 2000;//更新时间间隔
 	
-	var downValue,upValue;
+	var downValue,upValue,sampleMs;
 	//try{		
 			upSpeed = config.proxy.outbounds[currentOutboundIndex].upSpeed;			
 	/*
@@ -4356,7 +4356,7 @@ frmXray.trafficStats = function(){
 			if( !TrafficStats.samplerAlive() ){
 				TrafficStats.startSampler(apiTime);
 			}
-			downValue,upValue = TrafficStats.takeSample();
+			downValue,upValue,sampleMs = TrafficStats.takeSample();
 
 			if(downValue){
 				var downTraffic = config.proxy.outbounds[currentOutboundIndex].trafficDown;
@@ -4369,8 +4369,9 @@ frmXray.trafficStats = function(){
 				frmXray.listview.setItemText(math.size64(downTraffic).format(),currentOutboundIndex,10);
 				
 				//if(downSpeed){
-					if(downSpeed<downValue/2) {
-						downSpeed= downValue/2;
+					//速度 = 增量 / 样本实际覆盖的秒数（原来写死 /2，UI 定时器延迟时会虚高数倍）
+					if(downSpeed < downValue/((sampleMs ? sampleMs : apiTime)/1000)) {
+						downSpeed = downValue/((sampleMs ? sampleMs : apiTime)/1000);
 						config.proxy.outbounds[currentOutboundIndex].downSpeed = downSpeed;
 						frmXray.listview.setItemText(math.size64(downSpeed).format(),currentOutboundIndex,12);
 					}
@@ -4389,8 +4390,8 @@ frmXray.trafficStats = function(){
 				
 				//if(upSpeed){
 					//debug.log.print("定时器：upSpeed为",upSpeed,",upValue为",upValue);	
-					if(upSpeed<upValue/2) {
-						upSpeed= upValue/2;
+					if(upSpeed < upValue/((sampleMs ? sampleMs : apiTime)/1000)) {
+						upSpeed = upValue/((sampleMs ? sampleMs : apiTime)/1000);
 						config.proxy.outbounds[currentOutboundIndex].upSpeed = upSpeed;
 						frmXray.listview.setItemText(math.size64(upSpeed).format(),currentOutboundIndex,11);
 					}

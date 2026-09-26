@@ -44,10 +44,11 @@ import wsock.tcp.client;
 
 //===== 配置（外部可改：uiNet.cfg.xxx）=====
 var cfg = {
-	watch = true;      // 守卫总开关
-	threshold = 30;    // 超过该毫秒数才记录
-	verbose = true;    // 是否输出调用栈
-	heartbeat = 200;   // 心跳间隔(ms)
+	watch = true;        // 守卫总开关
+	threshold = 30;      // 网络守卫：超过该毫秒数才记录
+	hbThreshold = 200;   // 心跳：UI 线程停顿超过该毫秒数才记录
+	verbose = true;      // 是否输出调用栈
+	heartbeat = 200;     // 心跳间隔(ms)
 };
 self.cfg = cfg;
 
@@ -118,6 +119,170 @@ self.install = function(uiThreadId){
 	return true;
 };
 
+//===== 取「当前线程的 CPU 时间(ms)」：用于区分「在计算」与「在等待」=====
+var ftC = {DWORD dwLowDateTime;DWORD dwHighDateTime};
+var ftE = {DWORD dwLowDateTime;DWORD dwHighDateTime};
+var ftK = {DWORD dwLowDateTime;DWORD dwHighDateTime};
+var ftU = {DWORD dwLowDateTime;DWORD dwHighDateTime};
+
+var cpuMs = function(){
+	var h = ::Kernel32.GetCurrentThread();
+	ftK.dwLowDateTime = 0; ftK.dwHighDateTime = 0;
+	ftU.dwLowDateTime = 0; ftU.dwHighDateTime = 0;
+	::Kernel32.GetThreadTimes(h, ftC, ftE, ftK, ftU);
+	var k = ftK.dwHighDateTime * 4294967296 + ftK.dwLowDateTime;
+	var u = ftU.dwHighDateTime * 4294967296 + ftU.dwLowDateTime;
+	return (k + u) / 10000;
+};
+
+//===== 阶段标记：卡顿时回答「UI 线程最后进入的是哪个阶段」=====
+/*
+用法：在可疑任务的第一行调用 uiNet.mark("名字")。
+
+判据（心跳输出）：
+	停顿 440ms | 最后阶段:XXX(已进入 438ms)   → 元凶就是 XXX
+	停顿 440ms | 最后阶段:XXX(已进入 3ms)     → 不是 XXX（在别处卡）
+
+为什么「最后进入」不会被高频短任务覆盖掉：
+	UI 线程是单线程的。任务执行期间其它代码根本没有机会运行，
+	所以卡住的那段时间里 markName 一定停留在「卡住的那个阶段」。
+*/
+var marks = {};       // 名字 → 自上次心跳以来的调用次数
+var markName = null;  // 最后进入的阶段名
+var markTick = 0;     // 最后进入的时刻
+var segments = {};    // 慢区间：记录「上一次 mark → 本次 mark」之间超过阈值的时间
+var SEG_MAX = 24;     // ★ 慢区间最多保留条数（防止滚动列表时无限累积）
+var segDropped = 0;   // 被丢弃的慢区间条数（仅用于日志说明）
+
+/*
+定时器 id → 名字（自动建立，无需改动任何定时器代码）：
+	msgObserver 在【消息分发前】记下当前 WM_TIMER 的 id（msgCurW），
+	而定时器回调的第一行通常是 uiNet.mark("名字")，
+	于是 mark 时就能把「这个 timer id」和「这个名字」对应起来。
+	编号重复出现时保留首次名字（后续 mark 可能是回调内部的子阶段，如 logEntry）。
+*/
+var timerNames = {};
+var msgCurCode = 0;   // 当前正在分发的消息号（由 msgObserver 设置）
+var msgCurW = 0;      // 当前正在分发的消息 wParam（WM_TIMER 时即定时器 id）
+
+//显式注册（不想依赖自动命名时可用）
+self.nameTimer = function(id,name){
+	if(id) timerNames[id] = name;
+	return id;
+};
+
+/*
+区间计时（回答「到底哪一段代码慢」）：
+	mark 只记「进入」，无法区分「在 XXX 内部卡」与「在 XXX 之后的代码里卡」。
+	记录相邻两次 mark 的间隔后，心跳直接输出：
+		慢区间: logEntry→trafficTimer 480ms
+	表示「logEntry 之后到 trafficTimer 之前」这段代码耗时 480ms。
+如果慢区间跨度为「markName → 同一个 markName」，说明卡在该阶段自身内部。
+*/
+self.mark = function(name){
+	var t = ..time.tick();
+
+	//自动为 WM_TIMER 命名：首次见到该定时器时，取它内部第一个 mark 作为名字
+	if(msgCurCode == 0x0113/*_WM_TIMER*/ && msgCurW && !timerNames[msgCurW]){
+		timerNames[msgCurW] = name;
+	}
+
+if(markName && markTick){
+		var dt = t - markTick;
+		if(dt >= 50){
+			..table.push(segments, markName ++ "→" ++ name ++ " " ++ dt ++ "ms");
+			/*
+			★ 上限保护（重要）：没有报告冻结时 segments 会一直累积。
+			滚动虚表会大量触发 listRepaint → 内存无上限，且报告时拼出超长日志行
+			（曾出现过 4KB 单行；发布版 debug.log 是 base64，行长还会翻倍）。
+			只保留最近 SEG_MAX 条，其余计入 segDropped。
+			*/
+			while(#segments > SEG_MAX){
+				..table.remove(segments,1);
+				segDropped++;
+			}
+		}
+	}
+
+	var n = marks[name];
+	marks[name] = n ? (n + 1) : 1;
+	markName = name;
+	markTick = t;
+};
+
+//===== 消息探针：让「慢消息」自己报名字 =====
+/*
+aardio 的 win.loopMessage(observer) 会在【每条消息被分发之前】调用 observer。
+因此「相邻两次 observer 的间隔」= 上一条消息的处理耗时（+ 两条消息之间的空闲）。
+
+用法：win.loopMessage(uiNet.msgObserver);
+
+配合心跳的 CPU 判据一起读：
+	心跳说「在计算」+ 慢消息说「WM_TIMER 480ms」 → 就是这条 WM_TIMER 里的代码在烧 CPU
+	心跳说「在等待」+ 慢消息很长              → 是空闲，不是卡顿
+*/
+var MSG_NAMES = {
+	[0x0001]="WM_CREATE"; [0x0002]="WM_DESTROY"; [0x0003]="WM_MOVE";
+	[0x0005]="WM_SIZE"; [0x0006]="WM_ACTIVATE"; [0x0007]="WM_SETFOCUS";
+	[0x000E]="WM_GETTEXT"; [0x000F]="WM_PAINT"; [0x0010]="WM_CLOSE";
+	[0x0014]="WM_ERASEBKGND"; [0x0018]="WM_SHOWWINDOW"; [0x001C]="WM_ACTIVATEAPP";
+	[0x0020]="WM_SETCURSOR"; [0x0021]="WM_MOUSEACTIVATE"; [0x0024]="WM_GETMINMAXINFO";
+	[0x0046]="WM_WINDOWPOSCHANGING"; [0x0047]="WM_WINDOWPOSCHANGED";
+	[0x004E]="WM_NOTIFY"; [0x0051]="WM_NCCREATE"; [0x0083]="WM_NCCALCSIZE";
+	[0x0084]="WM_NCHITTEST"; [0x0085]="WM_NCPAINT"; [0x0086]="WM_NCACTIVATE";
+	[0x00A0]="WM_NCMOUSEMOVE"; [0x0100]="WM_KEYDOWN"; [0x0101]="WM_KEYUP";
+	[0x0102]="WM_CHAR"; [0x0111]="WM_COMMAND"; [0x0113]="WM_TIMER";
+	[0x0114]="WM_HSCROLL"; [0x0115]="WM_VSCROLL"; [0x0200]="WM_MOUSEMOVE";
+	[0x0201]="WM_LBUTTONDOWN"; [0x0202]="WM_LBUTTONUP"; [0x020A]="WM_MOUSEWHEEL";
+	[0x0216]="WM_MOUSELEAVE"; [0x0311]="WM_DISPLAYCHANGE";
+};
+
+var msgLast = 0;
+var msgLastCode = 0;
+var msgLastW = 0;
+var msgSlow = {};     // 最近的慢消息
+
+var msgName = function(code){
+	return MSG_NAMES[code] : ("msg0x" ++ ..string.upper(..string.format("%X",code)));
+};
+
+/*
+observer 契约：接收已解析好的 msg（含 hwnd / message / wParam / lParam）。
+返回非 null 会【阻止后续消息处理】—— 因此这里必须始终返回 null。
+*/
+self.msgObserver = function(msg){
+	var t = ..time.tick();
+
+	if(msgLast){
+		var dt = t - msgLast;
+		if(dt >= 40){
+			/*
+			WM_TIMER 的 wParam 就是定时器 ID —— 报出来才能直接点名是哪个定时器；
+			其余自定义消息报出 wParam（例如跨线程调用的 tag）。
+			*/
+			var nm = msgName(msgLastCode);
+			if(msgLastCode == 0x0113/*_WM_TIMER*/){
+				nm = "WM_TIMER[" ++ (timerNames[msgLastW] : ("id" ++ msgLastW)) ++ "]";
+			}
+			elseif(msgLastW){
+				nm = nm ++ "(w=" ++ msgLastW ++ ")";
+			}
+
+			..table.push(msgSlow, nm ++ " " ++ dt ++ "ms");
+			if(#msgSlow > 12) ..table.remove(msgSlow,1);
+		}
+	}
+
+	msgLast = t;
+	msgLastCode = msg.message;
+	msgLastW = msg.wParam;
+
+	//记录「当前正在分发的消息」——mark 用它给 WM_TIMER 自动命名
+	msgCurCode = msgLastCode;
+	msgCurW = msgLastW;
+	return null;
+};
+
 //===== 心跳：监视 UI 线程被阻塞的时长 =====
 self.startHeartbeat = function(winform, interval){
 	if(!winform) return null;
@@ -125,13 +290,50 @@ self.startHeartbeat = function(winform, interval){
 
 	interval = interval ? interval : cfg.heartbeat;
 	var last = ..time.tick();
+	var lastCpu = cpuMs();
 
 	hbId = winform.setInterval(function(){
 		var t = ..time.tick();
 		var gap = t - last - interval;
+		var cpu = cpuMs() - lastCpu;
 		last = t;
-		if(cfg.watch && gap >= cfg.threshold){
-			say("[UI-FREEZE] UI 线程被阻塞约 " ++ gap ++ "ms");
+		lastCpu = lastCpu + cpu;
+
+		if(cfg.watch && gap >= cfg.hbThreshold){
+			/*
+			判据：
+				CPU ≈ gap  → 在计算/重绘（CPU 型卡顿）
+				CPU ≈ 0    → 在等待（网络/IO/sleep 型卡顿）
+				最后阶段「已进入」时长 ≈ gap → 元凶就是它
+			*/
+			var kind = (cpu * 2 >= gap) ? "在计算" : "在等待";
+			var age = markName ? (t - markTick) : 0;
+
+			var info = "[UI-FREEZE] 停顿 " ++ gap ++ "ms | CPU " ++ cpu ++ "ms(" ++ kind ++ ")";
+			if(markName) info ++= " | 最后阶段:" ++ markName ++ "(" ++ age ++ "ms)";
+
+			var list = {};
+			for(k,v in marks){
+				if(v) ..table.push(list, k ++ "×" ++ v);
+			}
+			if(#list) info ++= " | 期间: " ++ ..string.join(list," ");
+			marks = {};
+
+			//慢区间：直接指出「哪两段 mark 之间」烧掉了时间
+//慢区间：直接指出「哪两段 mark 之间」烧掉了时间
+			if(#segments){
+				info ++= " | 慢区间(最近" ++ #segments ++ "条" ++ (segDropped > 0 ? ("，其余" ++ segDropped ++ "条已省略") : "") ++ "): " ++ ..string.join(segments," ／ ");
+				segments = {};
+				segDropped = 0;
+			}
+
+			//慢消息：哪条 Windows 消息处理得久（配合 CPU 判据区分「真在算」与「空闲」）
+			if(#msgSlow){
+				info ++= " | 慢消息: " ++ ..string.join(msgSlow," ／ ");
+				msgSlow = {};
+			}
+
+			say(info);
 		}
 	}, interval);
 

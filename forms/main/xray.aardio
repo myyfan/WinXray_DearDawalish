@@ -45,7 +45,7 @@ frmXray.listview.setExtended(0x10000/*_LVS_EX_DOUBLEBUFFER*/);
 
 //接管日志控件（批量刷新 + 智能滚动 + 容量管理），必须在任何日志输出之前调用
 import xray.logPanel;
-xray.logPanel.attach(frmXray.edit,40,10000);
+xray.logPanel.attach(frmXray.edit,1000,10000);
 
 /*
 虚表（vlistview）兼容层
@@ -116,6 +116,7 @@ frmXray.listview.invalidateRow = function(row){
 };
 
 frmXray.listview.onGetDispItem = function(item,row,col){
+	uiNet.mark("listRepaint");
 	var r = owner.viewCache[row];
 	if(r) return {text = r[col]};
 };
@@ -131,6 +132,7 @@ frmXray.listview.setItemText = function(text,row,col){
 };
 
 frmXray.listview.setTable = function(dataTable){
+	uiNet.mark("listSetTable");
 	if(!dataTable) return owner.clear();
 
 	var fields = dataTable.fields;
@@ -200,6 +202,7 @@ var sdLog = function(...){
 	debug.log.print(...);
 };
 var saveTimerId = frmXray.setInterval( 600000,function(){//定时5分钟保存proxy数据
+		uiNet.mark("saveTimer");
 		//debug.log.print("proxy save")
 		config.proxy.save()	
 	}
@@ -221,6 +224,7 @@ var activeOutbound
 				frmXray.clearInterval(testTimerId);	//删除定时器
 			}	
 			testTimerId = frmXray.setInterval( config.proxy.testInterval*1000,function(){
+					uiNet.mark("testTimer");
 					if(frmXray.btnTcping.disabled) return;//正在寻找服务器就返回
 					if( frmXray.autoTesting ) return; //如果是自动测试就退出
 					activeOutbound(outboundIndex,outboundAddress,true,false);//定时检测代理状态
@@ -1288,6 +1292,7 @@ frmXray.onTcpingFailed = function(){
 				if(retryOnNetworkAliveTimerId) frmXray.clearInterval(retryOnNetworkAliveTimerId);
 				retryOnNetworkAliveTimerId = frmXray.setInterval( 
 					function(){ 
+						uiNet.mark("netAliveTimer");
 						// 如果有激活了的服务器，那么retryOnNetworkAliveTimerId设为空，
 						// 并返回0，表示不再执行定时器函数
 						if(frmXray.listview.activeOutboundIndex){
@@ -2004,7 +2009,16 @@ frmXray.listview.onnotify = function(id,code,ptr){
 					} 
 				}
 				elseif(lvcd.iSubItem==6){ 
-					if(config.proxy.outbounds[item].autoConnect===false){ 
+/*
+					★ 关键修复（「滚动列表就崩溃」的根因）：
+					config.proxy.outbounds 是【稀疏表】（有洞），而虚表行数(12453) 大于节点数
+					→ 滚到空洞行时 outbounds[item] 为 null，直接写 .autoConnect 会抛异常。
+					而这段代码运行在 COMCTL32 的 NM_CUSTOMDRAW【绘制回调】内部，
+					异常一旦逃逸出回调，Windows 会直接杀掉进程（0xc000041d）——
+					2026-09-26 15:57 的崩溃正是如此（模块 COMCTL32.dll，偏移 0x66bdf）。
+					必须改用「直接下标」安全读取（失败返回 null，不抛异常）。
+					*/
+					if(..config.proxy.outbounds[[item]][["autoConnect"]]===false){
 						lvcd.clrText = 0xCCCCCC;
 					} 
 				}
@@ -2188,17 +2202,27 @@ for b,v in table.eachIndex(config.proxy.outbounds){
 			 
 			popmenu.add()
 
-			var autoConnect = config.proxy.outbounds[currentIdx].autoConnect!==false; 
+var autoConnect = ..config.proxy.outbounds[[currentIdx]][["autoConnect"]]!==false; //★ 直接下标安全读（空洞行返回 null 不报错）
 			var id = popmenu.add('允许自动测速并连接',function(id){
 				if(currentIdx){
-					for(i=#selectedItems;1;-1){ 
+for(i=#selectedItems;1;-1){ 
 						var item = selectedItems[i];
+
+						/*
+						★ 必须安全取节点：outbounds 是稀疏表（有洞），虚表行数(12453) 大于节点数，
+						所以 selectedItems 里可能存在「没有对应节点」的行 → outbounds[item] 为 null。
+						直接 .autoConnect= 会抛异常；这里位于 COMCTL32 通知回调内，
+						异常逃逸出回调会让 Windows 直接杀进程（0xc000041d，已实际发生）。
+						*/
+						var obItem = ..config.proxy.outbounds[[item]];
+						if(!obItem) continue;
+
 						if(autoConnect === false){
-							config.proxy.outbounds[item].autoConnect = null;
+							obItem.autoConnect = null;
 							//frmXray.listview.setItemText("",item,7);
 						}
 						else {
-							config.proxy.outbounds[item].autoConnect = false;
+							obItem.autoConnect = false;
 							frmXray.listview.setItemText("禁止测速",item,7);
 						}
 					}
@@ -2864,6 +2888,7 @@ frmXray.AutoTest = function(id,event){
 	//设置异常检查定时器,定时检测代理是否正常
 	testTimerId = frmXray.setInterval( 
 			autoTestTime*1000,function(){
+				uiNet.mark("autoTestTimer");
 				import debug
 			//	debug.log.print("定时器被调用2：",testTimerId);
 
@@ -3003,6 +3028,7 @@ setSearcherTimer = function(){
 	if(..searcherTimerID) frmXray.clearInterval(..searcherTimerID);
 	..searcherTimerID = frmXray.setInterval( 
 				1000,function(){
+					uiNet.mark("searcherTimer");
 					//import config;
 					//config.proxy.save();
 				//	debug.log.print("frmXray.chkSearchMode.oncommand() is running.")
@@ -3041,6 +3067,9 @@ if(#config.proxy.outbounds){
 // Xray 26.x 已移除 allowInsecure（2026-06-01 起为硬错误），
 // 原「跳过证书校验」的节点必须改用 pinnedPeerCertSha256 才能连接。
 // 在后台线程分片抓取（不阻塞界面），抓到后写回配置并保存。
+//★ 证书指纹常驻 worker 池（12 个线程只创建一次，见 frmXray.runCertPinBatch）
+var certPinPool;
+
 frmXray.startCertPinFetch = function(){
 	if(frmXray.certPinRunning) return;
 
@@ -3084,30 +3113,46 @@ frmXray.startCertPinFetch = function(){
 		return p;
 	};
 
-	frmXray.runCertPinBatch = function(){
+frmXray.runCertPinBatch = function(){
+		uiNet.mark("certPinBatch");
+
+		/*
+		★ 常驻 worker 池：12 个线程只创建一次，之后每批只 pushAsync 任务。
+		原实现每批都 thread.invoke 12 次 —— UI 线程实测 35ms/次，等于每批硬卡 420ms；
+		970 批累计约 7 分钟界面冻结（界面表现为「每 4~5 秒卡半秒」）。
+
+		池内 worker 只 import 一次 xray.certPin（原实现每个任务都 import 一次）。
+		waitTime=20 → quit 时 worker 能优雅自行退出，绝不被 terminate 强杀（强杀 = 内存不归还）。
+		*/
+		if(!certPinPool){
+			import thread.works;
+			certPinPool = thread.works(12,function(job){
+				import xray.certPin;
+				var sha = xray.certPin.getSha256(job.address,job.port,job.sni,4000);
+				thread.set("certPinResult_" + job.slot,{index=job.index;sha=sha});
+				thread.set("certPinDone_" + job.slot,true);
+			},20);
+		}
+
 		var stopPos = ..math.min(batchPos + BATCH - 1,totalJobs);
-		var batch = ..table.array();
-		for(k=batchPos,stopPos,1){
-			..table.push(batch,jobs[frmXray.certPinNodeAt(k)]);
-		}
 		frmXray.certPinBatchEnd = stopPos;
-		var n = #batch;
-		for(t=1,n,1){
-			..thread.set("certPinDone_" + t,false);
-			..thread.invoke(
-				function(j,tid){
-					import xray.certPin;
-					var sha = xray.certPin.getSha256(j.address,j.port,j.sni,4000);
-					thread.set("certPinResult_" + tid,{index=j.index;sha=sha});
-					thread.set("certPinDone_" + tid,true);
-				},batch[t],t
-			);
+
+		var n = 0;
+		for(k=batchPos,stopPos,1){
+			n++;
+			..thread.set("certPinDone_" + n,false);
+			var j = jobs[frmXray.certPinNodeAt(k)];
+			certPinPool.pushAsync({
+				slot = n; index = j.index; address = j.address; port = j.port; sni = j.sni
+			});
 		}
+
 		frmXray.certPinTaskCount = n;
 		frmXray.setTimeout(frmXray.pollCertPin,200);
 	};
 
 	frmXray.pollCertPin = function(){
+		uiNet.mark("pollCertPin");
 		var allDone = true;
 		for(t=1,frmXray.certPinTaskCount,1){
 			var st = ..thread.get("certPinDone_" + t);
@@ -3142,9 +3187,15 @@ frmXray.startCertPinFetch = function(){
 			frmXray.edit.print("证书指纹进度: " + frmXray.certPinDoneCount + "/" + frmXray.certPinTotal + "，成功：" + successCount);
 
 			batchPos = frmXray.certPinBatchEnd + 1;
-			if(batchPos > totalJobs){
+if(batchPos > totalJobs){
 				frmXray.certPinRunning = false;
 				frmXray.edit.print("后台证书指纹获取完成。");
+
+				//★ 收尾：优雅关闭常驻 worker 池（waitTime=20 → worker 很快自行退出，绝不被强杀）
+				if(certPinPool){
+					certPinPool.quit(3000);
+					certPinPool = null;
+				}
 			}
 			else {
 				frmXray.runCertPinBatch();
@@ -4299,6 +4350,7 @@ frmXray.trafficStats = function(){
 
 	trafficTimerId = frmXray.setInterval( 
 		function(){
+			uiNet.mark("trafficTimer");
 
 			import debug
 			import debug.log

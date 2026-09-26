@@ -247,7 +247,13 @@ win.dlg.message.install();
       所以保存期间的心跳会滞后 → 那里出现的 [UI-FREEZE] 属已知误报
       （可用同时刻的 [保存] 日志区分）。
 */
+/*
+探针阈值：
+  threshold   网络守卫：UI 线程上的网络调用超过该毫秒数即记录（[UI-NET]）
+  hbThreshold 心跳：UI 线程停顿超过该毫秒数即记录（[UI-FREEZE]，附 CPU 占用与「最后进入的阶段」）
+*/
 uiNet.cfg.threshold = 250;
+uiNet.cfg.hbThreshold = 250;
 uiNet.startHeartbeat(mainForm);
 
 //配置高级选项卡
@@ -276,6 +282,52 @@ tbs.skin({
 tbs.loadForm(1,"\forms\main\xray.aardio" );
 tbs.loadForm(2,"\forms\main\config\ConfigPage.aardio" );
 tbs.loadForm(3,"\forms\main\tools\tools.aardio");
+
+/*
+============================================================
+【性能修复 · 重绘雪崩】给所有窗口补 WS_CLIPCHILDREN(0x02000000)
+============================================================
+【症状】界面反应慢、滚动不畅；订阅/空闲时 UI 线程周期性停顿数百毫秒。
+
+【根因（实测数据）】aardio 的 win.form 默认不带 WS_CLIPCHILDREN，
+本程序有三层容器都是这种情况：主窗体 → custom(tab 容器) → tabPage 子窗体。
+缺了这个样式位，父窗口绘制时【不会排除子窗口占据的区域】：
+    父层绘制 → 覆盖子层区域 → 子层被迫重绘 → 再覆盖它的子层 → 层层雪崩。
+实测（对运行中的进程做只读探测，单位=UI 线程 CPU 时间）：
+    · 主窗体整窗失效 + 立即重绘 =  781 ms（CPU）
+    · 补上 WS_CLIPCHILDREN 后同操作 =   0 ms   ← 781ms 全部是无效的连锁重绘
+    · custom 容器重绘  687 ms → 0 ms
+    · 该 780ms 里 625ms 是虚表（SysListView32）被迫重绘：19 行 × 12 列
+      × 约 2.7ms/格的跨语言封送成本。
+所以以前【任何】一次界面更新（列表写一格、日志追加一行、切页、重绘）
+都会引爆整窗重绘，表现就是「点哪都卡、滚动更卡」。
+
+【修复】给所有容器窗口补上 WS_CLIPCHILDREN：
+父窗口绘制时跳过子窗口区域，子窗口按需自绘，雪崩链条被切断。
+这是 Windows 的标准做法（多数 UI 框架默认启用），不改变外观与布局。
+
+【为什么用递归】tabPage 内部还可能有多层容器，一次覆盖到所有已创建的子孙窗口。
+（之后动态创建的小窗体——菜单、消息框、编辑弹窗——面积小，影响可忽略。）
+============================================================
+*/
+var fixClipChildren;
+fixClipChildren = function(hwnd, depth){
+	if( !hwnd || depth > 6 ) return 0;
+	var n = 0;
+	var style = ::User32.GetWindowLongW(hwnd, -16/*_GWL_STYLE*/);
+	if( (style & 0x02000000/*_WS_CLIPCHILDREN*/) == 0 ){
+		::User32.SetWindowLongW(hwnd, -16, style | 0x02000000);
+		n++;
+	}
+	var child = ::User32.GetWindow(hwnd, 5/*_GW_CHILD*/);
+	while(child){
+		n += fixClipChildren(child, depth + 1);
+		child = ::User32.GetWindow(child, 2/*_GW_HWNDNEXT*/);
+	}
+	return n;
+};
+
+fixClipChildren(mainForm.hwnd, 0);
 
 tbs.selIndex = 1;
 
@@ -477,4 +529,10 @@ subscribe("uiCommand.HotkeyChanged",function(...){
 } )
 publish("uiCommand.HotkeyChanged");
 
-return win.loopMessage();
+/*
+消息探针：aardio 的 win.loopMessage(observer) 会在【每条消息分发之前】调用 observer，
+因此「相邻两次 observer 的间隔」= 上一条消息的处理耗时 —— 于是每条 Windows 消息
+都能自己报出耗时（写在 dbg$.log 的 [UI-FREEZE] 行尾的「慢消息」字段里）。
+observer 返回 null 表示继续正常处理，不改变任何行为。
+*/
+return win.loopMessage(uiNet.msgObserver);

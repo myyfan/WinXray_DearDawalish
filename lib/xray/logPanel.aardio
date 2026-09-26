@@ -61,6 +61,9 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 	if( ctrl.logPanelAttached ) return ctrl;
 	ctrl.logPanelAttached = true;
 
+	//卡顿探针（uiNet 可能未安装，这里做容错）
+	var net = ..uiNet;
+
 	maxLines = maxLines : 3000;
 	flushInterval = flushInterval : 40;
 	historyFlushInterval = historyFlushInterval : 5000;
@@ -159,6 +162,7 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 	裁剪后用「字符索引 → 行号 → EM_LINESCROLL 相对滚动」把视线拉回原处。
 	*/
 	var trim = function(keepPosition){
+		if(net) net.mark("logTrim");
 		charSinceCheck = 0;
 
 		var total = ::User32.SendMessage(hwnd,EM_GETLINECOUNT,null,null);
@@ -215,6 +219,7 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 
 	//视图在底部：正常追加并跟随
 	flush = function(){
+		if(net) net.mark("logFlush");
 		if( !#buffer ) return;
 
 		if( !isWindowAlive() ){ //控件已销毁
@@ -246,6 +251,7 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 
 	//视图不在底部：批量追加到末尾，然后精确还原用户正在查看的位置
 	flushHistory = function(){
+		if(net) net.mark("logFlushHistory");
 		if( !#buffer ) return;
 
 		if( !isWindowAlive() ){
@@ -299,6 +305,7 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 
 	//覆盖 log：所有日志输出的统一入口
 	ctrl.log = function(...){
+		if(net) net.mark("logEntry");
 		var s = ..string.concat(...);
 		..table.push(buffer,s);
 		bufferChars += #s;

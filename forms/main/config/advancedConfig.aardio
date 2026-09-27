@@ -70,7 +70,7 @@ tooltipCtrl.addTool(winform.radioSocksPac,'开启此选项以后：\nChrome 浏�
 
 import xray.pacServer;
 onPacUpdated = function(){
-	winform.editPacPort.text = xray.pacServer.getPort() || config.proxy.pacPort || 10083;
+	winform.editPacPort.text = xray.pacServer.getPort() || config.proxy.pacPort || 1084;
 	
 	var pac = xray.pacServer.getUrl();
 	winform.editPacUrl.text = pac ? string.match(pac,"[^?]+");
@@ -96,9 +96,9 @@ subscribe("sysProxy.modeChanged",function(mode){
 import xray.core;
 var onInboundsUpdated = function(){
 	var inbounds = ..config.core.default[["inbounds"]];
-	winform.editSocksPort.text = xray.core.socksProxyPort || inbounds[[1]][["port"]] || 10081;
-	winform.editHttpPort.text = xray.core.httpProxyPort || inbounds[[2]][["port"]] || 10082;
-	winform.editApiPort.text = xray.core.apiPort || inbounds[[3]][["port"]] || 10083;
+	winform.editSocksPort.text = xray.core.socksProxyPort || inbounds[[1]][["port"]] || 1081;
+	winform.editHttpPort.text = xray.core.httpProxyPort || inbounds[[2]][["port"]] || 1082;
+	winform.editApiPort.text = xray.core.apiPort || inbounds[[3]][["port"]] || 1083;
 	// 【已废弃】搜索器 socks/http 固定端口：槽位端口已改为「交给系统自动分配」，
 	// 界面上的搜索器 HTTP 端口输入框保留但留空（不再参与任何逻辑）。
 	winform.editSearcherHttpPort.text = "";

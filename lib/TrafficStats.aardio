@@ -28,7 +28,7 @@ corePath = ..io.fullpath("/core/xray/xray.exe");
 
 var inbounds = ..config.core.default[["inbounds"]];
 var apiPort = inbounds[3].port;
-//apiPort = 10084;
+//apiPort = 1083;   //（旧默认值 10084 已统一为 1083）
 
 reset = function(){
 	import debug
@@ -146,9 +146,14 @@ var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
 
 //==================== UI 侧接口（全部零网络调用）====================
 
-//当前 API 端口：每次现读配置（端口会漂移，绝不能用模块加载时缓存的旧值）
+//当前 API 端口：每次现读（端口会漂移，绝不能用模块加载时缓存的旧值）
+//【修正】优先取 ..xray.core.apiPort（运行时的权威值）：
+//   「兜底保险」下临时分配的端口不会写回配置，只存在于该变量里；
+//   若只读配置会拿到「避让结果」，与内核实际监听的端口不一致。
 var currentApiPort = function(){
-	var p = ..config.core.default[["inbounds"]][3][["port"]];
+	var p = ..xray.core[["apiPort"]];
+	if(p){ return p; }
+	p = ..config.core.default[["inbounds"]][3][["port"]];
 	if(p){ return p; }
 	return apiPort;
 };

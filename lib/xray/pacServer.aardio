@@ -73,9 +73,9 @@ restart = function(){
 
 	var listenIp = ..config.core.default.inbounds[[1]][["listen"]] : "127.0.0.1";
 
-	// 期望端口：优先从配置文件读取（未设置、或落在动态端口范围时用默认 10083）
+	// 期望端口：优先从配置文件读取（未设置、或落在动态端口范围时用默认 1084）
 	var wantPort = tonumber(..config.proxy.pacPort);
-	if( (! wantPort) || wantPort >= 49152 ){ wantPort = 10083 }
+	if( (! wantPort) || wantPort >= 49152 ){ wantPort = 1084 }
 
 	var currentIp,currentPort = $serverMain.getLocalIp(); 
 

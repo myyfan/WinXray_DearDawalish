@@ -249,11 +249,11 @@ var h2Call = function(conn, sid, path, authority, reqBody){
 };
 
 //==================== 客户端 ====================
-//每次调用建立独立连接（本机回环下开销 < 1ms），避免长连接状态不一致问题
-//host 默认 "127.0.0.1"，port 默认 10084，timeoutMs 默认 3000
+//【连接复用】client 内部持有常驻连接（懒建 + 断线自动重连），多次 call 复用同一条 h2c 连接
+//host 默认 "127.0.0.1"，port 默认 1083（Xray API 端口，与 config/core 的 inbounds[3] 一致），timeoutMs 默认 3000
 create = function(host, port, timeoutMs){
 	host = host : "127.0.0.1";
-	port = port : 10084;
+	port = port : 1083;
 	timeoutMs = timeoutMs : 3000;
 
 	var authority = host ++ ":" ++ port;

@@ -483,7 +483,7 @@ applyStreamSettings = function(ob,outbound){
 	return ob;
 };
 
-write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searcherHttpPorts){
+write  = function(jsonPath,outbound,sockPort,httpPort,apiPort,searcherSocksPorts,searcherHttpPorts){
 	/*
 	以config.core.default为模板，并根据节点信息修改参数，生成最终代理节点配置
 	*/
@@ -523,6 +523,13 @@ write  = function(jsonPath,outbound,sockPort,httpPort,searcherSocksPorts,searche
 			httpInbounds = ib;
 			httpInbounds.port = httpPort; 
 		} 
+		elseif(ib.tag == "api" && apiPort){
+			// 【修正】api 入站端口必须显式使用运行时的 apiPort。
+			// 原来它只沿用模板里的值（config.core.default.inbounds[3].port），
+			// 一旦端口避让结果没有写回配置（例如交由系统临时分配端口），
+			// 内核的 api 入站端口就会与 gRPC 实际连接的 apiPort 不一致。
+			ib.port = apiPort;
+		}
 	}
 		
 	if( type(socksInbounds) !="table"  ){

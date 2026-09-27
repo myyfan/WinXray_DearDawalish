@@ -81,6 +81,40 @@ getUsablePort = function(wantPort,sparePorts){
 	return null;
 }
 
+// 【兜底保险】交由系统分配一组可用的「主端口」（SOCKS / HTTP / API）。
+// 仅在「整体后移」连续失败时使用（见 restart 里的「端口保底」段落）。
+// 返回值只用于本次运行，不写入配置（下次启动仍从配置里保存的避让结果继续避让）。
+//
+// 注意：这里同样要做「连接探测」（isPortOccupied）——
+//   getFreePort 只是 bind 后立即释放，若端口正被设置了 SO_REUSEADDR 的进程监听
+//   （例如残留的旧内核），bind 会误报「空闲」（见文件开头的说明）。
+//
+// 返回纯数组（互不相同、且均已探测为空闲）；实在找不到返回 null。
+getAllocatablePorts = function(count,tryCount){
+	count = tonumber(count) : 3;
+	tryCount = tonumber(tryCount) : 100;
+	
+	var ports = ..table.array();
+	var used = {};
+	
+	for(i=1;tryCount;1){
+		if(#ports >= count) break;
+		
+		var p = ..wsock.tcp.server.getFreePort("127.0.0.1");
+		if(!p) continue;
+		
+		if(used[p]) continue;   // 去重（getFreePort 连续调用可能返回同一个端口）
+		used[p] = true;
+		
+		if(isPortOccupied(p)) continue;   // 已被占用则换一个
+		
+		..table.push(ports,p);
+	}
+	
+	if(#ports < count) return null;
+	return ports;
+}
+
 // 按配置的并发数决定搜索器槽位数（每 10 个一档，避免预建用不到的槽位与端口）：
 //   ≤10 → 10；≤20 → 20；≤30 → 30；≤40 → 40；其余 → searcherSlotMax
 getSearcherSlotCount = function(batchSize){
@@ -207,9 +241,9 @@ restart = function(editor,outbound){
 	// 主端口默认值（只填默认值；可用性探测与「整体后移」见下面「端口保底」段落）
 	// 49152是默认动态端口范围的开始端口，49152-65535
 	// 如果没有设置端口，或者设置端口的是动态端口，那么就使用默认提供的端口
-	if( (! socksProxyPort) || socksProxyPort >=  49152 ){ socksProxyPort = 10081 }
-	if( (! httpProxPort) || httpProxPort >=  49152 ){ httpProxPort = 10082 }
-	if( (! apiPort) || apiPort >=  49152 ){ apiPort = 10084 }
+	if( (! socksProxyPort) || socksProxyPort >=  49152 ){ socksProxyPort = 1081 }
+	if( (! httpProxPort) || httpProxPort >=  49152 ){ httpProxPort = 1082 }
+	if( (! apiPort) || apiPort >=  49152 ){ apiPort = 1083 }
 	
 	// 停止各种core
 	closeApiClient();   //★ 旧连接随旧内核失效，先关闭（下次取用时按新 apiPort 重建）
@@ -228,22 +262,25 @@ restart = function(editor,outbound){
 	// Xray 遇到入站端口冲突会直接静默退出（日志提示「已启动代理服务器」但代理实际不可用），
 	// 因此启动前必须确认端口可用；被占用则把所有主端口统一后移，并写回配置持久化。
 	var portShift = 0;
+	var portAllocated = false;   // ★ 是否启用了「系统分配」的临时端口（仅本次运行有效，不写入配置）
 	for(i=1;10;1){
 		if( ! (isPortOccupied(socksProxyPort) || isPortOccupied(httpProxPort) || isPortOccupied(apiPort)) ) break;
 		
-		socksProxyPort = socksProxyPort + 100;
-		httpProxPort = httpProxPort + 100;
-		apiPort = apiPort + 100;
-		portShift = portShift + 100;
-		
-		if(socksProxyPort > 65535 || httpProxPort > 65535 || apiPort > 65535){
+		// 【注意】先判边界再后移：保证端口始终落在有效范围内（否则会把非法端口写进配置）
+		if(socksProxyPort + 10 > 65535 || httpProxPort + 10 > 65535 || apiPort + 10 > 65535){
 			..publish("uiCommand.print","警告：主端口已超出有效范围，无法继续自动避让端口占用！");
 			break;
 		}
+		
+		socksProxyPort = socksProxyPort + 10;
+		httpProxPort = httpProxPort + 10;
+		apiPort = apiPort + 10;
+		portShift = portShift + 10;
 	}
 	
+	// 先保存「避让结果」：即使最终仍未避让成功也要保存 ——
+	// 这样下次启动可以从这个新位置接着避让（而不是每次都从默认端口重新开始）。
 	if(portShift > 0){
-		// 写回配置（持久化：下次启动直接使用新端口）
 		inbounds[1].port = socksProxyPort;
 		inbounds[2].port = httpProxPort;
 		inbounds[3].port = apiPort;
@@ -252,14 +289,48 @@ restart = function(editor,outbound){
 		..publish("uiCommand.print","检测到主端口被占用，已整体后移 " + portShift + " → SOCKS:" + socksProxyPort + " HTTP:" + httpProxPort + " API:" + apiPort);
 	}
 	
+	// ★ 兜底保险：连续避让 10 次后主端口仍被占用时，不再带着「仍被占用的端口」继续启动
+	//   （那样 Xray 会因入站端口冲突静默退出，表现为日志显示「已启动代理服务器」但代理实际不可用），
+	//   改为交由系统分配一组空闲端口。
+	//   【注意】循环结束后必须重新判定端口状态：原逻辑在循环结束后没有再做检查。
+	//   【注意】这里分配的端口只用于本次运行，不写回配置（上面保存的是避让结果）。
+	if( isPortOccupied(socksProxyPort) || isPortOccupied(httpProxPort) || isPortOccupied(apiPort) ){
+		var ports = getAllocatablePorts(3);
+		if(ports){
+			socksProxyPort = ports[1];
+			httpProxPort = ports[2];
+			apiPort = ports[3];
+			portAllocated = true;
+			..publish("uiCommand.print","警告：主端口连续避让后仍被占用，已临时由系统分配空闲端口（仅本次运行有效，不写入配置）→ SOCKS:" + socksProxyPort + " HTTP:" + httpProxPort + " API:" + apiPort);
+		}
+		else {
+			..publish("uiCommand.print","警告：无法分配空闲端口（端口资源异常），代理可能无法正常工作！");
+		}
+	}
+	
 	// === 搜索器槽位端口：交给系统自动分配 ===
 	// 槽位端口仅供本程序内部使用（每个槽位一对 socks/http 入站），无需固定值，
 	// 也不参与主端口的「整体后移」。
+	// 【注意】主端口在「兜底保险」下同样可能来自系统动态端口分配，与槽位端口存在撞车
+	//   可能（撞车会导致内核因入站端口冲突静默退出），因此这里要排除主端口。
+	var reservedPorts = {};
+	reservedPorts[socksProxyPort] = true;
+	reservedPorts[httpProxPort] = true;
+	reservedPorts[apiPort] = true;
+	
+	var pickSearcherPort = function(){
+		for(k=1;50;1){
+			var p = ..wsock.tcp.server.getFreePort("127.0.0.1");
+			if(p && !reservedPorts[p]) return p;
+		}
+		return null;
+	}
+	
 	searcherSocksProxyPorts = ..table.array();
 	searcherHttpProxyPorts = ..table.array();
 	for(i=1;slotMax;1){
-		searcherSocksProxyPorts[i] = ..wsock.tcp.server.getFreePort("127.0.0.1");
-		searcherHttpProxyPorts[i] = ..wsock.tcp.server.getFreePort("127.0.0.1");
+		searcherSocksProxyPorts[i] = pickSearcherPort();
+		searcherHttpProxyPorts[i] = pickSearcherPort();
 	}
 	searcherSocksProxyPort = searcherSocksProxyPorts[1];
 	searcherHttpProxyPort = searcherHttpProxyPorts[1];
@@ -307,9 +378,11 @@ restart = function(editor,outbound){
 		// 证书指纹统一由后台任务抓取（frmXray.startCertPinFetch），此处不做同步网络等待，
 		// 以免启动或切换内核时阻塞界面。
 		
+		// 【注意】apiPort 必须显式传给 configJson.write：api 入站端口不跟随 socks/http，
+		//   而「兜底保险」下临时分配的端口不会写回配置，只能靠运行时变量传入。
 		var jsonPath,err = ..xray.core.configJson.write(
 			..io.joinpath(..io.splitpath(corePath).dir,"config.json")
-			,outbound,socksProxyPort,httpProxPort,searcherSocksProxyPorts,searcherHttpProxyPorts);
+			,outbound,socksProxyPort,httpProxPort,apiPort,searcherSocksProxyPorts,searcherHttpProxyPorts);
 	
 		if(!jsonPath){
 			if( nexCore ){ nexCore.stop(); } 
@@ -346,10 +419,16 @@ restart = function(editor,outbound){
 		prcsxray.codepage = 65001;	
 		prcsxray.logResponse(editor);  
 		
-		inbounds[1].port = socksProxyPort;
-		inbounds[2].port = httpProxPort;
-		inbounds[3].port = apiPort;   // 【修正】原写法是 apiPort = inbounds[3].port（只读回），会导致 API 端口变更不生效
-		..config.core.save();
+		// 【注意】portAllocated 为真时，当前端口是「系统临时分配」的，
+		//   不写回配置（下次启动仍从配置里保存的「避让结果」继续避让）。
+		//   内核 config.json 用的是 socksProxyPort 等运行时变量，与此处的 inbounds 持久化无关，
+		//   因此这里不写回不影响本次内核启动。
+		if(!portAllocated){
+			inbounds[1].port = socksProxyPort;
+			inbounds[2].port = httpProxPort;
+			inbounds[3].port = apiPort;   // 【修正】原写法是 apiPort = inbounds[3].port（只读回），会导致 API 端口变更不生效
+			..config.core.save();
+		}
 	}
 	
 	..publish("uiCommand.print","已启动代理服务器，SOCKS端口:" + socksProxyPort + " HTTP端口:" + httpProxPort) 
@@ -489,7 +568,7 @@ startSearcher = function(editor,outbound){
 			return false,err:"启动失败,写入配置文件遇到错误！"; 
 		}
 	
-	//	prcsCmd,err = ..process.popen(corePath,' api',' ado','--server=127.0.0.1:10084',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
+	//	prcsCmd,err = ..process.popen(corePath,' api',' ado','--server=127.0.0.1:1083',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
 		prcsCmd,err = ..process.popen(corePath,' api',' ado','--server=127.0.0.1:'+apiPort,..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
 		return   ..string.match(prcsCmd.read(-1),"proxySearcher");
 		//debug.log.print("添加配置：")
@@ -514,7 +593,7 @@ stopSearcher = function(editor,outbound){
 	import console
 	
 	var corePath = getPath(editor.hwnd);
-//	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:10084',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
+//	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:1083',..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
 	prcsCmd,err = ..process.popen(corePath,' api',' rmo','--server=127.0.0.1:'+apiPort,..io.joinpath(..io.splitpath(corePath).dir,"searcherConfig.json"));
 	return   ..string.match(prcsCmd.read(-1),"proxySearcher");
 		//debug.log.print("删除配置：")

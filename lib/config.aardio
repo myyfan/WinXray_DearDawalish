@@ -91,7 +91,7 @@ config.__resetDefaultCore = function(){
     "inbounds":{
         {
             "listen":"0.0.0.0",
-            "port":10081,
+            "port":1081,
             "protocol":"socks",
             "tag":"proxy",
             "settings":{
@@ -108,7 +108,7 @@ config.__resetDefaultCore = function(){
         },
         {
             "listen":"0.0.0.0",
-            "port":10082,
+            "port":1082,
             "protocol":"http",
             "tag":"http_proxy",
             "settings":{
@@ -124,46 +124,13 @@ config.__resetDefaultCore = function(){
         },
         {
             "listen":"127.0.0.1",
-            "port":10084,
+            "port":1083,
             "protocol":"dokodemo-door",
             "tag":"api",
             "settings":{
                 "address":"127.0.0.1",
                 "allowTransparent":false,
                 "udp":false
-            }
-        },
-        {
-            "listen":"0.0.0.0",
-            "port":10091,
-            "protocol":"socks",
-            "tag":"proxySearcher",
-            "settings":{
-                "auth":"noauth",
-                "udp":true
-            },
-            "sniffing":{
-                "destOverride":{
-                    "http",
-                    "tls"
-                },
-                "enabled":true
-            }
-        },
-        {
-            "listen":"0.0.0.0",
-            "port":10092,
-            "protocol":"http",
-            "tag":"http_proxySearcher",
-            "settings":{
-
-            },
-            "sniffing":{
-                "destOverride":{
-                    "http",
-                    "tls"
-                },
-                "enabled":true
             }
         }
     },
@@ -236,14 +203,6 @@ config.__resetDefaultCore = function(){
                 },
                 "outboundTag":"api",
                 "type":"field"
-            }, 
-                {
-                "inboundTag":{
-                    "proxySearcher",
-                    "http_proxySearcher"
-                },
-                "outboundTag":"proxySearcher",
-                "type":"field"
             },
             {
                 "domain":{
@@ -255,7 +214,8 @@ config.__resetDefaultCore = function(){
             },
             {
                 "domain":{
-                    "geosite:gfw"
+                    "geosite:gfw",
+                    "github.io"
                 },
                 "outboundTag":"proxy",
                 "type":"field"

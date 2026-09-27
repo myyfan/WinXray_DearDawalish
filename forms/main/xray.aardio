@@ -2921,7 +2921,7 @@ subscribe("uiCommand.restartxrayCore",function(){
 		//console.dump(outbounds[i].failedCount);
 		//sleep(100);
 	//	if(#outbounds < 51 ) {break;}
-		if(type(outbounds[i])!="table" || ( outbounds[i].failedCount &&  outbounds[i].failedCount > 9 ) ){
+		if(type(outbounds[i])!="table" || ( outbounds[i].failedCount &&  outbounds[i].failedCount > 49 ) ){
 			if(outbounds[i].ps == "已测通" ){
 				if(outbounds[i].failedCount &&  outbounds[i].failedCount > 99){
 					outbounds[i].ps =null;

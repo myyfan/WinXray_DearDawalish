@@ -212,6 +212,7 @@ restart = function(editor,outbound){
 	if( (! apiPort) || apiPort >=  49152 ){ apiPort = 10084 }
 	
 	// 停止各种core
+	closeApiClient();   //★ 旧连接随旧内核失效，先关闭（下次取用时按新 apiPort 重建）
 	if(prcsxray){
 		prcsxray.terminate();
 		// 【重要】terminate 是异步的，必须等旧内核真正退出并释放监听端口再往下走，
@@ -361,6 +362,45 @@ restart = function(editor,outbound){
 //==================== Xray API（gRPC 直连，替代 ado/rmo 进程调用）====================
 //纯 aardio 实现 h2c + gRPC + protobuf：不写磁盘配置文件、不启动额外 xray.exe 进程。
 //实测单次调用约 4~5ms（本机回环），远快于启动进程（约 400ms）。
+/* ============== gRPC 常驻连接（后台搜索复用同一条连接） ==============
+【为什么需要】
+grpcAddOutbound / grpcRemoveOutbound 原来每次调用都 xray.grpc.create(...) 新建连接：
+本机回环约 4~5ms/次，而且内核每接受一条连接都会记一条访问日志。
+后台搜索每个节点要「删旧出站 + 加新出站」= 2 次调用 ⇒ 每节点 2 条短连接，
+整轮搜索要建上万条连接。
+
+现在改为：整个搜索期间共用同一条常驻连接，只在【停止搜索 / 内核重启】时关闭。
+（xray.grpc.create 内部已支持：懒建 + HTTP/2 stream id 递增复用 + 断线自动重连重试）
+
+【线程】addOutbound / deleteOutbound 都在界面线程被调用（dispatchSearchTask 也由
+        worker 同步封送回界面线程执行），因此这条连接只会被界面线程使用，无需加锁。
+
+【端口漂移】API 端口可能因「端口保底」整体后移（+100，见 restart 里的看护逻辑），
+        所以每次取用时比对端口：不一致就关闭旧连接、按新端口重建。
+        内核重启后即便端口没变，旧连接也已随旧进程失效 —— call 失败会自动重连重试。
+===================================================================== */
+var apiClient = null;
+var apiClientPort = 0;
+
+//取（或按需建立）常驻 gRPC 连接
+var getApiClient = function(){
+	import xray.grpc;
+	if(!apiPort){ return null; }
+	if(apiClient && apiClientPort === apiPort){ return apiClient; }
+
+	if(apiClient){ apiClient.close(); apiClient = null; }   //端口变了 → 重建
+	apiClient = ..xray.grpc.create("127.0.0.1", apiPort, 3000);
+	apiClientPort = apiPort;
+	return apiClient;
+};
+
+//关闭常驻连接（停止后台搜索 / 内核重启时调用）
+closeApiClient = function(){
+	if(apiClient){ apiClient.close(); apiClient = null; }
+	apiClientPort = 0;
+	return true;
+};
+
 var grpcAddOutbound = function(proxyTag,outbound){
 	import xray.core.configJson;
 	import xray.grpc;
@@ -369,14 +409,16 @@ var grpcAddOutbound = function(proxyTag,outbound){
 	if(!ob){
 		return null,err:"生成出站配置失败";
 	}
-	var client = ..xray.grpc.create("127.0.0.1",apiPort,3000);
-	return ..xray.grpc.addOutbound(client,proxyTag,ob);
+	var client = getApiClient();
+	if(!client){ return null,"无法连接 Xray API（apiPort 为空）"; }
+	return ..xray.grpc.addOutbound(client,proxyTag,ob);   //复用常驻连接（不再每次新建）
 };
 
 var grpcRemoveOutbound = function(proxyTag){
 	import xray.grpc;
-	var client = ..xray.grpc.create("127.0.0.1",apiPort,3000);
-	return ..xray.grpc.removeOutbound(client,proxyTag);
+	var client = getApiClient();
+	if(!client){ return null,"无法连接 Xray API（apiPort 为空）"; }
+	return ..xray.grpc.removeOutbound(client,proxyTag);   //复用常驻连接
 };
 
 //新的添加出口服务器函数，修改自startSearcher函数

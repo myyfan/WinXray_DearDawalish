@@ -3497,6 +3497,11 @@ frmXray.finishSearcherStop = function(){
 	frmXray.searcherBusyCount = 0;
 	frmXray.searcherSlots = {};
 	frmXray.destroySearcherPool();
+
+	//★ 停止后台搜索 → 关闭常驻 gRPC 连接
+	//  （整个搜索期间所有 addOutbound/deleteOutbound 都复用这一条连接，
+	//    停止时统一关闭；下次重新勾选搜索时按需重建）
+	xray.core.closeApiClient();
 };
 
 // 兜底：万一某个 worker 异常卡死、永不归还槽位，30 秒后强制释放

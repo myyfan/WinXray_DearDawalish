@@ -83,6 +83,23 @@ var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
 	*/
 	var client = ..xray.grpc.create("127.0.0.1", port, 3000);
 
+	/*
+	【★ 启动时必须先「丢弃」一次统计 —— 清空内核计数器】
+
+	Xray 的统计计数器从内核启动起就一直在累加；reset 只是「读后清零」。
+	所以「第一次」queryStats(reset=true) 返回的其实是
+	【内核启动（或上次 reset）以来的全部累计流量】，而不是本周期增量。
+
+	如果不先丢弃：切换服务器 / 内核重启后流量定时器会重启，
+	采样线程第一次读到的就是这一大坨历史累计 ——
+	UI 侧把它当成「2 秒内的增量」→ 速度算出天文数字；
+	而速度又是「只记最大值」，于是这个假值会被永久写进配置
+	（config.proxy.outbounds[].downSpeed），从此该节点一直显示这个假速度。
+
+	这里先做一次「只读不用」的丢弃，让后续采样从干净状态开始。
+	*/
+	..xray.grpc.queryStats(client, "outbound>>>proxy>>>traffic>>>", true);
+
 	while( true ){
 
 		//代际号变了 → 优雅退出（自然 return，线程自行结束；绝不 terminate）
@@ -115,8 +132,8 @@ var samplerWorker = function(port, intervalMs, gen, sampleKey, genKey){
 		//每轮都发布（UI 侧同时用 tick 判断采样线程是否还活着）
 		..thread.set(sampleKey, {
 			seq = seq;
-			down = totalDown;
-			up = totalUp;
+			down = down;
+			up = up;
 			tick = ..time.tick();
 		});
 
@@ -182,8 +199,8 @@ takeSample = function(){
 	if(!s){ return null; }
 	if(s.seq === lastSeq){ return null; }
 
-	var dDown = s.down - lastDown;
-	var dUp = s.up - lastUp;
+//	var dDown = s.down - lastDown;
+//	var dUp = s.up - lastUp;
 
 	/*
 	【时间跨度 elapsedMs 必须取「样本发布时的时间戳」，不能用 UI 定时器的名义间隔】
@@ -195,17 +212,17 @@ takeSample = function(){
 	var elapsedMs = lastTick ? (s.tick - lastTick) : samplerIntervalMs;
 
 	lastSeq = s.seq;
-	lastDown = s.down;
-	lastUp = s.up;
+//	lastDown = s.down;
+//	lastUp = s.up;
 	lastTick = s.tick;
 
 	//采样线程换代后累计量归零 → 增量可能为负，夹紧为 0
-	if(dDown < 0){ dDown = 0; }
-	if(dUp < 0){ dUp = 0; }
+//	if(dDown < 0){ dDown = 0; }
+//	if(dUp < 0){ dUp = 0; }
 	if(!elapsedMs || elapsedMs <= 0){ elapsedMs = samplerIntervalMs; }
 
 	//返回：下行增量、上行增量、【本次样本实际覆盖的毫秒数】
-	return dDown,dUp,elapsedMs;
+	return s.down,s.up,elapsedMs;
 };
 
 /*

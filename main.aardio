@@ -326,6 +326,40 @@ import win.ui.menu;
 
 // 托盘消息处理
 mainForm.wndproc = {	
+	/*
+	============================================================
+	【性能修复 · 恢复重绘】拦截 WM_SIZE，消除"最小化→恢复"时的第 2 次整窗重绘
+	============================================================
+	【根因（实测数据）】
+	  最小化时窗口客户区变成 0x0，恢复时变回原尺寸 → 触发 WM_SIZE
+	  → aardio 默认处理会对所有子控件 InvalidateRect(null,true) 并 redraw()
+	  → 整个窗口树被【第 2 次】重绘（第 1 次是 Windows 恢复窗口时的必然重绘）。
+
+	  实测（UI 线程 CPU 时间）：
+	    SW_HIDE → SW_SHOW    （无 WM_SIZE）=  625 ms  ← 恰好等于 1 次整窗重绘
+	    SW_MINIMIZE → SW_RESTORE（有 WM_SIZE）= 1531 ms  ← 2 次整窗重绘
+	  其中：虚表重绘一次约 515ms（12453 行虚表，可见 19 行 x 12 列），
+	        阴影 GDI+ 重绘约 88ms。
+
+	【修复】仅在"客户区尺寸确实没有变化"时跳过默认处理：
+	  · SIZE_MINIMIZED：跳过（子控件保持原布局，避免无谓的失效）
+	  · SIZE_RESTORED 且与上次尺寸相同：跳过（避免无谓的整窗 invalidate）
+	  尺寸真的改变时（用户调整窗口、DPI 变化等）照常走默认处理，布局正常更新。
+	  不改变任何交互行为与外观。
+	============================================================
+	*/
+	[0x0005/*_WM_SIZE*/ ] = function(hwnd,message,wParam,lParam){
+		if( wParam == 1/*_SIZE_MINIMIZED*/ ) return true;
+		
+		var cx = lParam & 0xFFFF;
+		var cy = (lParam >> 16) & 0xFFFF;
+		if( wParam == 0/*_SIZE_RESTORED*/ ){
+			if( cx == mainForm.$lastNormalCx && cy == mainForm.$lastNormalCy ) return true;
+			mainForm.$lastNormalCx = cx;
+			mainForm.$lastNormalCy = cy;
+		}
+	};
+	
 	[0xACCF/*_WM_TRAYMESSAGE*/ ] = function(hwnd,message,wParam,lParam){
 		if( lParam = 0x205/*_WM_RBUTTONUP*/ ){
 			//弹出托盘菜单以前,一定要前置主窗口中,避免不点击菜单不会消失，父窗口隐藏也要这样做

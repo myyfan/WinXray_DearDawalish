@@ -74,9 +74,10 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 	var EM_LINEFROMCHAR = 0xC9;
 	var EM_GETFIRSTVISIBLELINE = 0xCE;
 	var EM_POSFROMCHAR = 0xD6;
-	var EM_CHARFROMPOS = 0xD7;
 	var EM_GETSCROLLPOS = 0x4DD;
 	var EM_SETSCROLLPOS = 0x4DE;
+	var EM_SETSEL = 0xB1;
+	var EM_EXGETSEL = 0x434;
 	var VK_LBUTTON = 0x01;
 
 	var CHECK_CHARS = 20000;        //每累积这么多字符检查一次行数（摊销 EM_GETLINECOUNT 成本）
@@ -138,11 +139,61 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 	};
 
 	//取视图顶部的字符索引（用于裁剪后的位置锚定；失败返回 -1）
+	//★ 不可用 `& 0xFFFF` 截断返回值：字符位置很容易超过 65535，
+	//  截断后会得到一个错误但"看起来合法"的位置（实测 117850 被截成 52314）。
 	var getTopCharIndex = function(){
-		var pt = {int x=0;int y=0};
-		var idx = ::User32.SendMessage(hwnd,EM_CHARFROMPOS,0,pt) & 0xFFFF;
-		if( idx === 0xFFFF ) return -1;
+		//★ 不能用 EM_CHARFROMPOS(0,0) 定位视口顶部：点 (0,0) 落在首行文字上方
+		//  那一丝空隙里，返回的是【首行的上一行】的字符（实测 firstVisible=253
+		//  时返回第 252 行的字符）。把插入点钉到那里，richedit 为了显示插入点
+		//  会向上滚一行（实测 253 → 252）—— 这正是"点回日志窗口时视图回退一行"。
+		var topLine = ::User32.SendMessage(hwnd,EM_GETFIRSTVISIBLELINE,null,null);
+		if( topLine < 0 ) return -1;
+
+		var idx = ::User32.SendMessage(hwnd,EM_LINEINDEX,topLine,null);
+		if( idx < 0 || idx === 0xFFFFFFFF ) return -1;
 		return idx;
+	};
+
+	/*
+	把插入点（caretPos）钉在当前视口内，返回是否真的移动了插入点。
+
+	★ 为什么必须这么做：
+	  appendText 会把插入点留在文本末尾，而 richedit 在重新获得输入焦点时会
+	  滚动到插入点（EnsureCaretVisible）。若插入点停在末尾，用户"把日志往上
+	  翻 → 切到别的程序 → 切回来"时视图就会自己跳回底部（切走期间控件失焦，
+	  插入点又被 appendText 留在末尾），用户正在看的那一段被冲走。
+	  把插入点钉在视口内，重新获得焦点时就不会再触发滚动。
+
+	★ 为什么 flush（跟随底部）也需要：
+	  否则用户"在底部看日志 → 往上翻（此刻没有新日志，既不会走 flush 也不会
+	  走 flushHistory）→ 切走 → 切回"时，插入点仍停在末尾，照样会跳到底部。
+
+	仅在用户没有选区时移动插入点，避免破坏用户正在选择的内容。
+	*/
+	var pinCaretToViewport = function(){
+		var cr = {int cpMin;int cpMax};
+		::User32.SendMessage(hwnd,EM_EXGETSEL,0,cr);
+		if( cr.cpMin !== cr.cpMax ) return false; //用户有选区，不动
+
+		var topIdx = getTopCharIndex();
+		if( topIdx < 0 ) return false;
+
+		//★ 钉在「首行的下一行行首」而不是首行行首：首行常被像素级滚出一部分
+		//  （实测首行首字符 y = -15，即它在客户区之外），插入点放在那里，
+		//  richedit 为了显示插入点仍可能上滚一行。下一行必然是完整可见的。
+		var topLine = ::User32.SendMessage(hwnd,EM_GETFIRSTVISIBLELINE,null,null);
+		var anchorIdx = ::User32.SendMessage(hwnd,EM_LINEINDEX,topLine + 1,null);
+		if( anchorIdx < 0 ) anchorIdx = topIdx; //最后一行已在视口内时回退
+
+		var sp = {int x;int y};
+		::User32.SendMessage(hwnd,EM_GETSCROLLPOS,0,sp);
+
+		::User32.SendMessage(hwnd,EM_SETSEL,anchorIdx,anchorIdx);
+
+		//★ 万一移动插入点仍然引起滚动（例如首行被像素级滚出了一部分），把滚动位置
+		//  设回原值 —— 保证"钉插入点"这个动作本身绝不移动用户的视线。
+		::User32.SendMessage(hwnd,EM_SETSCROLLPOS,0,sp);
+		return true;
 	};
 
 	//重绘整个控件（含滚动条等非客户区），用于解除 WM_SETREDRAW 后立即刷新
@@ -225,6 +276,10 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 
 		//★ 视图不在底部（用户正在查看历史日志）→ 转入长间隔批量追加模式
 		if( !isAtBottom() ){
+			//★ 顺手把插入点钉进视口：从「发现视图离开底部」到「长间隔到达」之间
+			//  可能有好几秒，这段时间插入点还停在文本末尾；只要控件在这期间重新
+			//  获得焦点（切走再切回、程序内聚焦），richedit 就会把视图甩到底部。
+			pinCaretToViewport();
 			scheduleFlush(true);
 			return;
 		}
@@ -242,6 +297,15 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 			trim(false);
 			scrollBottom();
 		}
+
+		/*
+		★ 这里刻意不调用 pinCaretToViewport()：
+		  视图在底部时，插入点停在文本末尾才是正确状态 —— 聚焦时滚到末尾
+		  仍然停在底部，不会造成任何视觉跳动。反而在这里移动插入点会把视图
+		  从"精确底部"挪开，破坏"跟随最新日志"的观感。
+		  "用户翻到中间后插入点还留在末尾"这类情况由 onFocusLost 与
+		  flushHistory 负责处理。
+		*/
 	};
 
 	//视图不在底部：批量追加到末尾，然后精确还原用户正在查看的位置
@@ -284,9 +348,14 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 		//  因此把滚动位置设回原值 = 停在用户原来正在看的那一段内容。
 		var restored = ::User32.SendMessage(hwnd,EM_SETSCROLLPOS,0,sp);
 
+		//★ 插入点钉在视口内（详见 pinCaretToViewport 注释，其内部已保证不移动视线）
+		if( restored ) pinCaretToViewport();
+
 		redraw();
 
-		if( !restored ) scrollBottom(); //极端情况下还原失败，退化为跟随最新
+		//还原失败时重试一次；绝不再 scrollBottom —— 那等于把正在查看历史的
+		//用户强行甩到底部，比"位置略有偏差"糟糕得多。
+		if( !restored ) ::User32.SendMessage(hwnd,EM_SETSCROLLPOS,0,sp);
 
 		//容量管理：查看历史期间一般不裁剪（会破坏视线位置），仅在行数极端时兜底
 		charSinceCheck += #s;
@@ -330,6 +399,22 @@ attach = function(ctrl,maxLines,flushInterval,historyFlushInterval){
 	//printf 原本直接 appendText + vScroll（会跳到底部、绕过容量管理），统一走 log
 	ctrl.printf = function(f,...){
 		if(f) ctrl.log( ..string.format(f,...),'\r\n' );
+	};
+
+	/*
+	★ 失焦瞬间把插入点钉在当前视口内。
+
+	只在 flush/flushHistory 里钉插入点还不够：用户"把日志往上翻 → 切走"时，
+	如果这段时间前后都没有新日志（既不走 flush 也不走 flushHistory），
+	插入点会停在上次追加时的位置（可能与当前视口相差很远），切回来时
+	richedit 滚动到该插入点，用户正在看的那一段照样被冲走。
+
+	在失焦这一刻钉住插入点，可以完整覆盖这种情况：
+	用户切到别的程序时控件必然失去焦点，此时把插入点对齐到当前视口，
+	之后再回到程序（控件重新获得焦点）就不会滚动。
+	*/
+	ctrl.onFocusLost = function(){
+		pinCaretToViewport();
 	};
 
 	return ctrl;

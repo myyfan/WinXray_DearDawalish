@@ -435,6 +435,87 @@ var pbAddress = function(addr){
 	return pbStr(2, addr);
 };
 
+//==================== VLESS encryption 预处理 ====================
+/*
+Xray 的 VLESS「加密方案」字符串有两条消费路径，规则不同：
+
+① JSON 配置路径（写 config.json 交内核解析）：
+   内核 infra/conf/vless.go 会自行剥离 mlkem768x25519plus 前缀，
+   因此该路径必须【原样透传】，不要在这里处理。
+
+② gRPC 直发 protobuf 路径（本库）：
+   内核不做这层解析，字符串会直接进入 encryption.ClientInstance.Init，
+   那里要求 Account.encryption(3) 只含 base64 密钥段（"." 分隔），
+   且每段 RawURL-Base64 解码后必须是 32（X25519）或 1184（ML-KEM-768）字节；
+   前缀信息必须拆进独立字段 xorMode(4) / seconds(5) / padding(6)。
+
+   否则内核报 "failed to use encryption" -> 整条 AddOutbound 被拒绝
+   （表现为 gRPC trailers-only + 该节点被跳过）。
+
+解析规则与内核 VLessOutboundConfig.Build 完全一致：
+   s = split(encryption, ".")
+   s[1] 必须是 "mlkem768x25519plus"（否则视为其它方案，原样透传）
+   s[2]: native->xorMode=0 / xorpub->1 / random->2
+   s[3]: "0rtt" | "1rtt" -> seconds = 1
+   s[4..]: 长度<20 -> padding 段；否则必须是合法密钥段
+*/
+var VLESS_ENC_PREFIX = "mlkem768x25519plus";
+var VLESS_XOR_MODE = { native=0; xorpub=1; random=2 };
+
+//返回 { encryption=; xorMode=; seconds=; padding=; degraded=; error= }
+parseVlessAccountEncryption = function(enc){
+	//注意：必须先判 null 再 tostring，否则 null 会被转成 "null" 字符串
+	if(enc === null){ return { encryption="none" }; }
+	enc = tostring(enc);
+	if(!#enc){ return { encryption="none" }; }
+
+	var low = ..string.lower(enc);
+	if(low == "none" || low == "auto"){ return { encryption=low }; }
+
+	var parts = ..string.split(enc,".");
+	var n = #parts;
+	if(n < 4 || parts[1] != VLESS_ENC_PREFIX){
+		//非该前缀：可能是纯密钥段（合法）或其它方案 -> 原样透传，交给内核判定
+		return { encryption=enc };
+	}
+
+	var xorMode = VLESS_XOR_MODE[parts[2]];
+	if(xorMode === null){
+		return { encryption="none"; degraded=true; error="unsupported xorMode: " ++ parts[2] };
+	}
+
+	var seconds = 0;
+	if(parts[3] == "0rtt" || parts[3] == "1rtt"){ seconds = 1; }
+	else{
+		return { encryption="none"; degraded=true; error="unsupported rtt: " ++ parts[3] };
+	}
+
+	var keys = {}, pads = {};
+	for(i=4;n;1){
+		var seg = parts[i];
+		if(!#seg){ continue; }
+		if(#seg < 20){ ..table.push(pads,seg); continue; }
+		var raw = crypt.decodeUrlBase64(seg);
+		var l = raw ? #raw : 0;
+		if(l != 32 && l != 1184){
+			//兜底：任何无法确认的段一律降级 none，
+			//避免「一个畸形节点让整条 AddOutbound 被内核拒绝」
+			return { encryption="none"; degraded=true; error="invalid key segment length: " ++ l };
+		}
+		..table.push(keys,seg);
+	}
+	if(!#keys){
+		return { encryption="none"; degraded=true; error="no key segment" };
+	}
+
+	return {
+		encryption = ..string.join(keys,".");
+		xorMode = xorMode;
+		seconds = seconds;
+		padding = #pads ? ..string.join(pads,".") : null;
+	};
+};
+
 //构建 Endpoint{1:address, 2:port, 3:user{3:TypedMessage{account}}}
 var buildEndpoint = function(proto, s){
 	var e = pbBytes(1, pbAddress(s.address)) ++ pbInt(2, ..tonumber(s.port) : 0);
@@ -449,7 +530,14 @@ var buildEndpoint = function(proto, s){
 		if(u){
 			acct = pbStr(1, u.id : "");
 			if(u.flow){ acct ++= pbStr(2, u.flow); }
-			acct ++= pbStr(3, u.encryption : "none");
+
+			//★ encryption 必须预处理：gRPC 直发 protobuf 时内核不会剥离
+			//   mlkem768x25519plus 前缀（详见 parseVlessAccountEncryption 说明）
+			var encOpts = parseVlessAccountEncryption(u.encryption);
+			acct ++= pbStr(3, encOpts.encryption);
+			if(encOpts.xorMode){ acct ++= pbInt(4, encOpts.xorMode); }
+			if(encOpts.seconds){ acct ++= pbInt(5, encOpts.seconds); }
+			if(encOpts.padding){ acct ++= pbStr(6, encOpts.padding); }
 		}
 	}
 	elseif(proto == "vmess"){

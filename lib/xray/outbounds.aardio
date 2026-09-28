@@ -12,13 +12,77 @@ import xray.yaml;
 
 
 
-namespace xray.outbounds;
+namespace xray.outbounds;
 
 // 界面通知：后台线程 / 子进程里的 ..mainForm 为 null（线程是隔离环境，看不到主线程的全局变量），
 // 此时直接跳过，避免「解析流程」被界面提示打断（节点数据本身照常返回）。
 // 界面线程下就是原先的 ..mainForm.publish("uiCommand.print",...) 。
 var uiPrint = function(...){
 	if(..mainForm) ..mainForm.publish("uiCommand.print",...);
+};
+// 分享链接里「用户名/密码内含 @」的修复（RFC 3986：userinfo 里的 @ 必须写成 %40）。
+// inet.url.split 按【第一个 @】切分 authority，例如
+//   trojan://ultra@kWZd@z-jp2.1card.cc:10012  →  user="ultra"、host="kWZd@z-jp2.1card.cc"
+// 密码被截断、主机含 @ 解析不出 DNS，节点直接报废（实测这类节点 21 个以上）。
+// 做法：解析前把 authority 段里「最后一个 @ 之前」的裸 @ 编码成 %40（decodeUser 会自动解回）。
+// 只作用在 authority 段，不会碰到 query 与 #备注；不含多个 @ 的链接原样返回。
+var encodeLinkUserAt = function(u){
+	if(type(u)!="string") return u;
+	var sp = ..string.indexOf(u,"://");
+	if(!sp) return u;
+	var body = sp+3;
+	// authority 段的结束位置 = 第一个 / ? # 之前（都找不到则到末尾）
+	var ae = #u+1;
+	var p1 = ..string.indexOf(u,"/",body); if(p1 && p1<ae) ae = p1;
+	var p2 = ..string.indexOf(u,"?",body); if(p2 && p2<ae) ae = p2;
+	var p3 = ..string.indexOf(u,"#",body); if(p3 && p3<ae) ae = p3;
+	var auth = ..string.slice(u,body,ae-1);
+	// 找 authority 段里最后一个 @（RFC 3986 规定它才是 userinfo 与 host 的分界）
+	var lastAt,pos = 1;
+	while(true){
+		var q = ..string.indexOf(auth,"@",pos);
+		if(!q) break;
+		lastAt = q; pos = q+1;
+	}
+	if(!lastAt) return u;
+	var head = ..string.slice(auth,1,lastAt-1);
+	if(!..string.indexOf(head,"@")) return u; // 只有一个 @：本来就是对的，不动
+	head = ..string.replaceLiteral(head,"@","%40");
+	// 尾部必须从「最后一个 @」开始切，否则会丢掉 @host:port
+	return ..string.slice(u,1,body-1) ++ head ++ ..string.slice(u,body+lastAt-1,#u);
+};
+// 分享链接里 trojan / trojan-go / hysteria2 的 userinfo 是「整体秘密」（密码 / auth），
+// 但 inet.url.split 会把 userinfo 按 ":" 拆成 user 与 password，导致：
+//   · 含 1 个 ":"  → 密码被截断（hysteria2://gf1:gfhysteria2024@... 得到 id="gf1"）；
+//   · 含 2 个以上 ":" → inet.url.split 直接返回 null，整条节点被静默丢弃
+//     （真实订阅里的 trojan://pH[]S[Bh:_:D6T4k@... 就是这种）。
+// 做法：解析前把 userinfo（最后一个 @ 之前）里的裸 ":" 编码成 %3A，
+// 这样 split 拿到的就是完整的 user，再由 joinUserSecret / decodeUser 解回原值。
+// 只作用于 authority 段、且必须存在 userinfo；不含 ":" 或没有 userinfo 的链接原样返回。
+// 注意：socks / http / naive 的 userinfo 是真的「用户名:密码」两段，绝不能套用本函数。
+var encodeLinkUserColon = function(u){
+	if(type(u)!="string") return u;
+	var sp = ..string.indexOf(u,"://");
+	if(!sp) return u;
+	var body = sp+3;
+	// authority 段的结束位置 = 第一个 / ? # 之前（都找不到则到末尾）
+	var ae = #u+1;
+	var p1 = ..string.indexOf(u,"/",body); if(p1 && p1<ae) ae = p1;
+	var p2 = ..string.indexOf(u,"?",body); if(p2 && p2<ae) ae = p2;
+	var p3 = ..string.indexOf(u,"#",body); if(p3 && p3<ae) ae = p3;
+	var auth = ..string.slice(u,body,ae-1);
+	// 找 authority 段里最后一个 @（它才是 userinfo 与 host 的分界）
+	var lastAt,pos = 1;
+	while(true){
+		var q = ..string.indexOf(auth,"@",pos);
+		if(!q) break;
+		lastAt = q; pos = q+1;
+	}
+	if(!lastAt) return u; // 没有 userinfo：无认证链接，不动
+	var head = ..string.slice(auth,1,lastAt-1);
+	if(!..string.indexOf(head,":")) return u; // 没有裸冒号：无需处理
+	head = ..string.replaceLiteral(head,":","%3A");
+	return ..string.slice(u,1,body-1) ++ head ++ ..string.slice(u,body+lastAt-1,#u);
 };
 // 分享链接里的用户名/密码解码。
 // inet.url.split 不会自动解码 user，而导出端会 inet.url.encode，
@@ -29,6 +93,17 @@ var decodeUser = function(v){
 	if(!..string.indexOf(v,"%")) return v;
 	var d = ..inet.url.decode(v);
 	return d ? d : v;
+};
+// 恢复「整体即秘密」类协议的 userinfo（trojan / trojan-go / hysteria2）。
+// 这些协议的 userinfo 是一个整体秘密（密码 / auth），而 inet.url.split
+// 会按【第一个 :】把它拆成 user 与 password —— 密码含 ":" 时只取 user 会被截断
+// （真实订阅里存在这种节点，例如 trojan://pH[]S[Bh:_:D6T4k@...）。
+// 这里把两段拼回整体再统一解码，与导出端 inet.url.encode 往返一致。
+var joinUserSecret = function(u){
+	if(!u || type(u.user)!="string") return null;
+	var s = u.user;
+	if(type(u.password)=="string") s = s ++ ":" ++ u.password;
+	return decodeUser(s);
 };
 //分享链接
 exportSharedLinks = function(outbounds){
@@ -1126,7 +1201,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var vmess2 = ..string.match(line,`vmess\:\/\/[^\@\s]+\@[^\?\#\s\:]+<\:\d+>*\S*`);
 		
 		if( vmess2 ) {
-			var vmessUrl = ..inet.url.split(vmess2) 
+			var vmessUrl = ..inet.url.split(encodeLinkUserAt(vmess2)) 
 			if(vmessUrl && vmessUrl.user && vmessUrl.host && vmessUrl.port){
 				var outbound = {
 					address = vmessUrl.host;
@@ -1214,7 +1289,7 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 vless 链接。vless\:\/\/=字面 vless://；\S+=其后所有非空白字符
 		var vless = ..string.match(line,`vless\:\/\/\S+`);
 		if( vless ) {
-			var vlessUrl = ..inet.url.split(vless) 
+			var vlessUrl = ..inet.url.split(encodeLinkUserAt(vless)) 
 			// 按 VLESS URI 规范 uuid 段是必填的，但部分订阅源里的链接省略了它
 			// （形如 vless://主机:端口?type=ws&security=tls）。
 			// 为了让这类节点也能导入而不是被静默丢弃，这里只要求主机与端口，uuid 取不到时留空。
@@ -1275,12 +1350,12 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 hysteria2 或 hy2 链接。\S+=全部非空白字符；: 是假值合并运算符，左边为 null 时取右边
 		var hy = ..string.match(line,`hysteria2\:\/\/\S+`) : ..string.match(line,`hy2\:\/\/\S+`);
 		if( hy ) {
-			var hyUrl = ..inet.url.split(hy)
+			var hyUrl = ..inet.url.split(encodeLinkUserColon(encodeLinkUserAt(hy)))
 			if(hyUrl && hyUrl.host && hyUrl.port){
 				var outbound = {
 					address = hyUrl.host;
 					port = tonumber(hyUrl.port) : 443;
-					id = decodeUser(hyUrl.user);
+					id = joinUserSecret(hyUrl);
 					network = "hysteria";
 					protocol = "hysteria2";
 					tls = "tls";
@@ -1399,12 +1474,12 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 trojan 链接。trojan\:\/\/=字面 trojan://；\S+=其后所有非空白字符
 		var trojan = ..string.match(line,`trojan\:\/\/\S+`);
 		if( trojan ) {
-			var trojanUrl = ..inet.url.split(trojan) 
+			var trojanUrl = ..inet.url.split(encodeLinkUserColon(encodeLinkUserAt(trojan))) 
 			if(trojanUrl && trojanUrl.user && trojanUrl.host){
 				var outbound = {
 					address = trojanUrl.host;
 					port = tonumber(trojanUrl.port) : 443; 
-					id = decodeUser(trojanUrl.user);
+					id = joinUserSecret(trojanUrl);
 					network = "tcp";
 					protocol = "trojan"
 				};
@@ -1448,12 +1523,12 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 trojan-go 链接，规则同上
 		var trojan = ..string.match(line,`trojan-go\:\/\/\S+`);
 		if( trojan ) {
-			var trojanUrl = ..inet.url.split(trojan) 
+			var trojanUrl = ..inet.url.split(encodeLinkUserColon(encodeLinkUserAt(trojan))) 
 			if(trojanUrl && trojanUrl.user && trojanUrl.host){
 				var outbound = {
 					address = trojanUrl.host;
 					port = tonumber(trojanUrl.port) : 443; 
-					id = decodeUser(trojanUrl.user);
+					id = joinUserSecret(trojanUrl);
 					network = "tcp";
 					protocol = "trojan-go"
 				};
@@ -1542,7 +1617,7 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 socks5 或 socks 链接。socks5?=socks 后可选的 5；\:=字面冒号；(\/\/\S+)=双斜杠及其后所有非空白字符
 		var socks = ..string.match(line,`socks5?\:(\/\/\S+)`); 
 		if( socks ) { 
-			var socksUrl = ..inet.url.split("socks5:"+socks) 
+			var socksUrl = ..inet.url.split(encodeLinkUserAt("socks5:"+socks)) 
 			if( socksUrl && socksUrl.host && socksUrl.port){ 
 				var outbound = {
 					address = socksUrl.host;
@@ -1578,7 +1653,7 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 proxy:// 链接（Clash 中 http(s) 代理的写法）。\S+=全部非空白字符
 		var proxy = ..string.match(line,`proxy\:\/\/\S+`); 
 		if( proxy ) { 
-			var proxyUrl = ..inet.url.split(proxy) 
+			var proxyUrl = ..inet.url.split(encodeLinkUserAt(proxy)) 
 			if( proxyUrl && proxyUrl.host && proxyUrl.port){ 
 				var outbound = {
 					address = proxyUrl.host;
@@ -1588,7 +1663,7 @@ importFromString = function(str,subscribeUrl,subps){
 				};
 
 				if(proxyUrl.user && proxyUrl.password){
-					outbound.id = proxyUrl.user +":"+ proxyUrl.password
+					outbound.id = decodeUser(proxyUrl.user) ++ ":" ++ decodeUser(proxyUrl.password)
 				} 
 
 				if(proxyUrl.extraInfo){
@@ -1619,7 +1694,7 @@ importFromString = function(str,subscribeUrl,subps){
 // 【模式匹配】匹配 naive 链接。(naive\+(\w+)\:\/\/\S+) 分成三部分：naive\+=字面前缀；\w+=协议名（如 http/https）；\S+=其余非空白字符
 		var naive,naiveNetwork = ..string.match(line,`(naive\+(\w+)\:\/\/\S+)`);
 		if( naive ) {
-			var naiveUrl = ..inet.url.split(naive) 
+			var naiveUrl = ..inet.url.split(encodeLinkUserAt(naive)) 
 			if( naiveUrl && naiveUrl.host ){
 				var outbound = {
 					address = naiveUrl.host;
@@ -1630,7 +1705,7 @@ importFromString = function(str,subscribeUrl,subps){
 				};
 
 				if(naiveUrl.user && naiveUrl.password){
-					outbound.id = naiveUrl.user +":"+ naiveUrl.password
+					outbound.id = decodeUser(naiveUrl.user) ++ ":" ++ decodeUser(naiveUrl.password)
 				} 
 
 				if(naiveUrl.extraInfo){
@@ -1721,7 +1796,7 @@ importFromString = function(str,subscribeUrl,subps){
 		var otherScheme,otherBody = ..string.match(line,`^\s*([a-zA-Z][a-zA-Z0-9\-\.\+]*)\:\/\/(\S+)$`);
 		if(otherScheme){
 			otherScheme = ..string.lower(otherScheme);
-			var oUrl = ..inet.url.split(otherScheme ++ "://" ++ otherBody);
+			var oUrl = ..inet.url.split(encodeLinkUserAt(otherScheme ++ "://" ++ otherBody));
 			if(oUrl && oUrl.host){
 				// Xray 的 hysteria 协议仅支持 version=2（即 hysteria2），
 				// 单独的 hysteria:// 链接是 v1，标记为 hysteria1 以便明确降级（而不是按 v2 错误生成）
@@ -2617,7 +2692,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		}
 
 		if(!text){
-			uiPrint("[任务] 获取失败:" ++ task.url);
+		//	uiPrint("[任务] 获取失败:" ++ task.url);
 			debug.log.print("[任务] 获取失败:",task.url);
 			..thread.set(task.key,"");	// 失败也写一个非 null 值，表示「已完成」
 			return;
@@ -2677,8 +2752,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		}
 
 		if(!content){
-			uiPrint("[" ++ url ++ "] 主订阅源获取失败");
-			debug.log.print("[" ++ url ++ "] 主订阅源获取失败");
+			uiPrint("[ " ++ url ++ " ] 主订阅源获取失败");
+			debug.log.print("[ " ++ url ++ " ] 主订阅源获取失败");
 		}
 
 		// ---- 组装任务列表：主订阅源内容 + 全部二级链接 ----
@@ -2700,8 +2775,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 		}
 
 		if(#tasks){
-			uiPrint("[" ++ url ++ "] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
-			debug.log.print("[" ++ url ++ "] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
+			uiPrint("[ " ++ url ++ " ] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
+			debug.log.print("[ " ++ url ++ " ] 共 " ++ #tasks ++ " 个任务（主订阅源 + " ++ #linkTasks ++ " 个二级链接），分批并发获取并解析 ...");
 
 			var tBegin = ..time.tick();
 			var keyPrefix = "subTask_" ++ tostring(..string.crc32(url)) ++ "_" ++ tostring(tBegin) ++ "_";
@@ -2741,8 +2816,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 						..thread.set(key,null);		// 立即释放跨线程共享区内存
 						if(type(nodes)==type.table){
 							var added = addNodes(nodes);	// ← 完成一批就立即去重合并
-							uiPrint("[任务] " ++ tasks[pk].url ++ "获得" ++ #nodes ++ "个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
-							debug.log.print("[任务] " ++ tasks[pk].url ++ "获得" ++ #nodes ++ "个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
+							uiPrint("[任务] " ++ tasks[pk].url ++ " 获得 " ++ #nodes ++ " 个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
+							debug.log.print("[任务] " ++ tasks[pk].url ++ " 获得 " ++ #nodes ++ " 个，" ++ " 新增 " ++ added ++ " 个唯一节点，累计 " ++ #impOutbounds);
 						//	else debug.log.print("[任务] " ++ tasks[pk].url ++ " 获取0个节点 ");
 						}
 						
@@ -2757,8 +2832,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			}
 
 			
-			uiPrint("[" ++ url ++ "] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
-			debug.log.print("[" ++ url ++ "] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
+			uiPrint("[ " ++ url ++ " ] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
+			debug.log.print("[ " ++ url ++ " ] 全部任务处理完成，耗时 " ++ (..time.tick()-tBegin) ++ " ms，唯一节点 " ++ #impOutbounds ++ " 个");
 		}
 		// 本订阅源处理完毕：关闭进度提示框，随后用 msgOk 汇报本次结果
 		closeSubscribeProgressDlg(progressForm);

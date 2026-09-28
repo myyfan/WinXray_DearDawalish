@@ -13,7 +13,7 @@
 //任务文件（JSON）字段：
 //   urls         [必填] 订阅源网址数组
 //   resultPath   [必填] 结果文件路径
-//   prefillKeys  [可选] 已有节点的 "address:port" 数组，用于预填充去重
+//   prefillKeys  [可选] 已有节点的 "protocol:address:port:id" 数组，用于预填充去重
 //   batchSize    [可选] 每批并发数（默认 8）
 //   progressPath [可选] 进度文件（逐行追加 JSON，供主进程实时展示）
 //   logPath      [可选] 过程日志文件（逐行追加 JSON，仅供排查）

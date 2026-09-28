@@ -2206,6 +2206,45 @@ catch () {
 
 
 // ==========================================================================
+// 节点身份键（去重 / 预填充的唯一权威）
+//
+// 键格式："protocol:address:port:id"
+//   · 原实现只比较 "address:port" —— 同一台服务器上的不同协议节点会被误判为重复，
+//     只保留先出现的那个，其余全部丢弃（例如同端口同时提供 vless 与 trojan 的节点）。
+//     现加入 protocol。
+//   · 再加入 id：id 是统一的身份字段（uuid / password / auth_str 都归一到 id，
+//     见各协议解析分支的导出注释）。同一台服务器上的不同账号（不同 UUID / 密码）
+//     可用性往往不同，必须视为不同节点，否则会丢节点。
+//   · protocol 与 address 统一转小写：协议名、域名、IPv6 地址都不区分大小写，
+//     大小写不同时它们本就是同一个节点。
+//   · ★ id 刻意【不】转小写：id 大多存放密码 / 密钥（区分大小写），
+//     转小写会把不同密码的节点错合并 → 直接丢节点；
+//     宁可漏合并（多导一个重复），也不能错合并（这符合「宁导错，不错过」）。
+//   · port 用 tostring 归一化：tostring(443) 与 tostring("443") 同值，
+//     number / string 两种写法不会把同一个节点拆成两个键。
+//
+// ★ 全工程所有「去重 / 预填充」必须用本函数生成键：
+//     取键方：xray.outbounds（预填充 + addNodes）
+//             xray.subscribeFetch（预填充 + addNodes + exportPrefillKeys）
+//             forms\main\xray.aardio（removeRepeat）
+//   任何一处混用其它格式都会让预填充失效（旧节点识别不出 → 重复导入）。
+// ==========================================================================
+nodeKey = function(ob){
+	if(type(ob)!=type.table) return null;
+	var protocol = ..string.lower( ..string.trim( ..tostring(ob.protocol),' \t\r\n' ) );
+	var address  = ..string.lower( ..string.trim( ..tostring(ob.address),' \t\r\n' ) );
+	var port     = ..tostring(ob.port);
+	// ★ 空值必须归一为 ""，不能直接 tostring：tostring(null) 得到的是字符串 "null"，
+	//   而密码本身完全可能是字符串 "null"（ss / trojan 的密码是任意字符串），
+	//   两者撞键就会把不同节点错合并 → 丢节点。
+	var id = "";
+	if(ob.id !== null) id = ..string.trim( ..tostring(ob.id),' \t\r\n' );
+	return protocol ++ ":" ++ address ++ ":" ++ port ++ ":" ++ id;
+};
+
+
+
+// ==========================================================================
 // 从网页提取订阅链接（两级抓取 + 去重）
 //
 // 第 0 级：访问传入的 url，提取出其中「全部」链接并先去重，避免同一个地址被重复访问。
@@ -2633,11 +2672,11 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	//   3) 语义与 removeRepeat 的「保留序号在前的」完全一致：库里已有的节点会胜出。
 	//   注意 outbounds 是稀疏表，# 不能保证覆盖全部元素，这里用 for-in 全量遍历。
 	// ==================================================================
-	var seenKeys = {};	// 去重索引：address:port → true（整个更新过程共享，跨源跨批次）
+	var seenKeys = {};	// 去重索引：protocol:address:port:id → true（整个更新过程共享，跨源跨批次）
 	var prefillCount = 0;
 	for(k,ob in cfgOutbounds){
 		if(type(ob)!=type.table) continue;
-		seenKeys[ tostring(ob.address) ++ ":" ++ tostring(ob.port) ] = true;
+		seenKeys[ nodeKey(ob) ] = true;
 		prefillCount++;
 	}
 	..debug.log.print("[去重] 预填充库中已有节点",prefillCount,"个（这些节点本次将被直接跳过）");
@@ -2730,7 +2769,7 @@ updateSubscription = function(outbondSubscribeUrlMap){
 			for(i=1;#nodes;1){
 				var ob = nodes[i];
 				if(type(ob)!=type.table) continue;
-				var key = tostring(ob.address) ++ ":" ++ tostring(ob.port);
+				var key = nodeKey(ob);
 				if(seenKeys[key]) continue;		// 已存在 → 直接丢弃
 				seenKeys[key] = true;
 				..table.push(impOutbounds,ob);
@@ -2879,8 +2918,8 @@ updateSubscription = function(outbondSubscribeUrlMap){
 	..config.proxy.save();
 	// 按需求：界面只报告「每个主订阅源结束时获得多少节点」，
 	// 其余进度信息一律只写 debug.log，避免弹窗过多干扰。
-	uiPrint("此次订阅更新共找到" + count + "个订阅服务器。");
-	debug.log.print("此次订阅更新共找到" + count + "个订阅服务器。")
+	uiPrint("此次订阅更新共添加" + count + "个新服务器。");
+	debug.log.print("此次订阅更新共添加" + count + "个新服务器。")
 //	..publish("outbounds.updateConfigJson");
 //	..publish("uiCommand.restartxrayCore",cfgOutbounds) 
 

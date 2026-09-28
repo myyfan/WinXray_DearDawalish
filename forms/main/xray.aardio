@@ -2701,7 +2701,9 @@ frmXray.removeRepeat=function(){
 	for(i=1;srcCount;1){
 		var ob = srcOutbounds[i];
 		if(type(ob)!=type.table) continue;
-		var key = tostring(ob.address) ++ ":" ++ tostring(ob.port);
+		// 节点身份键：protocol:address:port:id（全工程统一，见 xray.outbounds.nodeKey）
+		// 原实现只比 address:port —— 同服务器的不同协议节点会被误判为重复而丢弃
+		var key = xray.outbounds.nodeKey(ob);
 		if(seenKeys[key]){
 			removecount++;	// 重复 → 直接丢弃（等价于原来的 ob.repeat=true + 倒序删除）
 			continue;

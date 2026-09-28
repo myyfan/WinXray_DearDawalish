@@ -208,7 +208,7 @@ var runInProcess = function(urlMap,options){
 // 参数 @urlMap 订阅源表 { [url] = true | 内容字符串 }
 // 参数 @options 同 xray.subscribeFetch.fetch，另支持：
 //     timeoutMs 子进程超时（默认 15 分钟）
-//     prefillKeys 直接指定 "address:port" 数组（不传则从 existedNodes 自动导出）
+//     prefillKeys 直接指定 "protocol:address:port:id" 数组（不传则从 existedNodes 自动导出）
 // 返回 nodes, stats / null, err
 // ==========================================================================
 runInChild = function(urlMap,options){

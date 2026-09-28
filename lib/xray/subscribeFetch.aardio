@@ -97,7 +97,7 @@ var fetchPageRaw = function(url){
 //
 // 参数 @urlMap  订阅源表 { [url] = true } 或 { [url] = 内容字符串 }；传 null 自动收集
 // 参数 @options 可选参数表：
-//     prefillKeys  已有节点的 "address:port" 字符串数组（跨进程传参用，优先）
+//     prefillKeys  已有节点的 "protocol:address:port:id" 字符串数组（跨进程传参用，优先）
 //     existedNodes 已有节点数组（同进程直接传 ..config.proxy.outbounds）
 //     batchSize    每批并发数，默认 8
 //     onSourceBegin = function(url)           每个订阅源开始处理
@@ -154,7 +154,7 @@ fetch = function(urlMap,options){
 	var prefillCount = 0;
 
 	if(type(options.prefillKeys)==type.table){
-		// 子进程路径：只传 "address:port" 字符串，体积远小于整表序列化
+		// 子进程路径：只传 "protocol:address:port:id" 字符串，体积远小于整表序列化
 		for(i=1;#options.prefillKeys;1){
 			var k = options.prefillKeys[i];
 			if(k && #k){
@@ -167,7 +167,7 @@ fetch = function(urlMap,options){
 		// 同进程路径：直接用节点表，省掉一次字符串构造
 		for(k,ob in options.existedNodes){
 			if(type(ob)!=type.table) continue;
-			seenKeys[ ..tostring(ob.address) ++ ":" ++ ..tostring(ob.port) ] = true;
+			seenKeys[ ..xray.outbounds.nodeKey(ob) ] = true;
 			prefillCount++;
 		}
 	}
@@ -183,7 +183,7 @@ fetch = function(urlMap,options){
 		for(i=1;#nodes;1){
 			var ob = nodes[i];
 			if(type(ob)!=type.table) continue;
-			var key = ..tostring(ob.address) ++ ":" ++ ..tostring(ob.port);
+			var key = ..xray.outbounds.nodeKey(ob);
 			if(seenKeys[key]) continue;		// 已存在 → 直接丢弃
 			seenKeys[key] = true;
 			..table.push(outNodes,ob);
@@ -360,15 +360,23 @@ fetch = function(urlMap,options){
 };
 
 // ==========================================================================
-// 从节点数组生成 "address:port" 字符串数组（跨进程传给子进程做预填充去重）
+// 从节点数组生成节点身份键字符串数组（跨进程传给子进程做预填充去重）
+//
+// ★ 键格式必须与 xray.outbounds.nodeKey 完全一致（protocol:address:port:id），
+//   否则子进程侧的预填充索引匹配不上旧节点 → 旧节点会被重复导入。
 // ==========================================================================
 exportPrefillKeys = function(outbounds){
+	// 本函数可能在「订阅抓取子进程」等全新上下文里被调用，
+	// 而 nodeKey 定义在 xray.outbounds（本模块顶层刻意不 import 它，避免加载期循环导入），
+	// 所以这里必须就地导入：import 是幂等的，已加载时开销可忽略。
+	import xray.outbounds;
+
 	var keys = ..table.array();
 	if(type(outbounds)!=type.table) return keys;
 	for(k,ob in outbounds){
 		if(type(ob)!=type.table) continue;
 		if(ob.address === null && ob.port === null) continue;
-		..table.push(keys, ..tostring(ob.address) ++ ":" ++ ..tostring(ob.port));
+		..table.push(keys, ..xray.outbounds.nodeKey(ob));
 	}
 	return keys;
 };

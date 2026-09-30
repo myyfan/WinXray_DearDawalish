@@ -1074,7 +1074,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 	//	if(frmXray.chkAutoTest.checked || (isManualSwitch && !timerTesting)){
 			
 //	debug.log.print("isManualSwitch:",isManualSwitch,"timerTesting:",timerTesting);	
-
+	if(frmXray.chkAutoTest.checked ) {
 			var next = null;
 			//给每一个没有延迟数据的节点设默认值
 		//	if(!config.proxy.outbounds[next[1]].replyDelay ) 	config.proxy.outbounds[next[1]].replyDelay = 2000;	
@@ -1233,7 +1233,7 @@ frmXray.onStartXrayFailed = function(outboundIndex,outboundAddress,timerTesting)
 
 			switchOutbound(next[1],next[2],false);//根据是否勾选"重连"来决定是否要后面要继续
 			
-			
+	}
 				
 	//	}		
 
@@ -1265,6 +1265,64 @@ var netCheckAlive = function(){
 	return inet.http.isAlive(,false);
 };
 
+/*
+【网络异常处理】确认本机没有网络时，停止一切网络相关行为：
+  1. 暂停后台搜索 —— 无网时搜索只会徒劳失败、刷日志、空耗槽位
+  2. 代理切换为「不使用代理」—— 否则所有程序都会被指向一个连不出去的代理而白白等超时
+  3. 不再尝试寻找可用服务器 —— 无网时找不到，反复空转没有意义
+
+进入前记录「代理模式」与「后台搜索开关」，网络恢复后按原样还原（不自动重跑测速，
+恢复后由后台搜索按正常流程自己找到可用节点）。
+*/
+frmXray.netDownState = null;   // null = 网络正常；表 = 处于网络异常状态（保存进入前的设置）
+
+frmXray.enterNetworkDown = function(){
+	if(frmXray.netDownState) return false;   // 已在异常状态，不重复处理
+
+	import sysProxy;
+
+	frmXray.netDownState = {
+		proxyMode  = config.proxy.mode;
+		searchMode = frmXray.chkSearchMode.checked;
+	};
+
+	// 1. 暂停后台搜索（走官方停止路径：停止派发 + 等在测任务自然跑完并归还槽位）
+	if(frmXray.chkSearchMode.checked){
+		frmXray.chkSearchMode.checked = false;
+		frmXray.chkSearchMode.oncommand();
+	}
+
+	// 2. 代理切换为「不使用代理」
+	if(config.proxy.mode != "direct"){
+		sysProxy.switchToDirectMode();
+	}
+
+	frmXray.edit.print("网络连接异常：已暂停后台搜索，并切换为「不使用代理」");
+	return true;
+};
+
+frmXray.exitNetworkDown = function(){
+	var st = frmXray.netDownState;
+	if(!st) return false;   // 本来就不在异常状态
+	frmXray.netDownState = null;
+
+	import sysProxy;
+
+	// 1. 还原代理模式（若用户在断网期间手动改过代理，则以用户的设置为准）
+	if(st.proxyMode && st.proxyMode != "direct" && config.proxy.mode == "direct"){
+		sysProxy.switchMode(st.proxyMode);
+	}
+
+	// 2. 还原后台搜索
+	if(st.searchMode && !frmXray.chkSearchMode.checked){
+		frmXray.chkSearchMode.checked = true;
+		frmXray.chkSearchMode.oncommand();
+	}
+
+	frmXray.edit.print("网络已恢复：已还原代理模式与后台搜索");
+	return true;
+};
+
 frmXray.onTcpingFailed = function(){
 	
 	frmXray.btnTcping.disabledText = null;	
@@ -1280,30 +1338,27 @@ frmXray.onTcpingFailed = function(){
 	uiNet.async(netCheckAlive, null, frmXray,
 		function(alive){
 			if(alive){
-				// 有网络时，自动更新订阅
+				// 有网络（只是节点不可用）：确保处于正常状态，并自动更新订阅
+				frmXray.exitNetworkDown();
 				frmXray.autoUpdateSubscription(1000);
 			}
 			else {
-				// 没有网时，创建一个定时器，每隔1秒检查一次
-				if(retryOnNetworkAliveTimerId) frmXray.clearInterval(retryOnNetworkAliveTimerId);
+				// 确认没有网络：停止网络行为（暂停后台搜索 + 切换为不使用代理）
+				frmXray.enterNetworkDown();
+				
+				// 只留一个轻量探针等待网络恢复；【不再】在此期间尝试寻找可用服务器
 				retryOnNetworkAliveTimerId = frmXray.setInterval( 
 					function(){ 
-						// 如果有激活了的服务器，那么retryOnNetworkAliveTimerId设为空，
-						// 并返回0，表示不再执行定时器函数
-						if(frmXray.listview.activeOutboundIndex){
-							retryOnNetworkAliveTimerId = null;
-							return 0;
-						}
 						if(frmXray.networkAliveChecking) return;   // 防重入：上一轮还没回来就跳过
 						frmXray.networkAliveChecking = true;
 						uiNet.async(netCheckAlive, null, frmXray,
 							function(alive){
 								frmXray.networkAliveChecking = false;
 								if(alive){
-									// 检测到有网后，重新测延迟，并清除定时器
+									// 检测到有网：清除定时器，按进入前的状态恢复正常运行
 									if(retryOnNetworkAliveTimerId) frmXray.clearInterval(retryOnNetworkAliveTimerId);
 									retryOnNetworkAliveTimerId = null;
-									frmXray.btnTcping.oncommand();
+									frmXray.exitNetworkDown();
 								}
 							}
 						);
@@ -1312,7 +1367,7 @@ frmXray.onTcpingFailed = function(){
 			}  
 		}
 	);
-} 
+}
 
 
 
